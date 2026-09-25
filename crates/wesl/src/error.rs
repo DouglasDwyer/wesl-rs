@@ -111,90 +111,27 @@ pub enum TomlError {
 }
 
 /// Any WESL error.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
-    ParseError(wgsl_parse::Error),
-    ValidateError(ValidateError),
-    ResolveError(ResolveError),
-    ImportError(ImportError),
-    UsageError(UsageError),
-    CondCompError(CondCompError),
-    TomlError(TomlError),
+    #[error("{0}")]
+    ParseError(#[from] wgsl_parse::Error),
+    #[error("{0}")]
+    ValidateError(#[from] ValidateError),
+    #[error("{0}")]
+    ResolveError(#[from] ResolveError),
+    #[error("{0}")]
+    ImportError(#[from] ImportError),
+    #[error("{0}")]
+    UsageError(#[from] UsageError),
+    #[error("{0}")]
+    CondCompError(#[from] CondCompError),
+    #[error("{0}")]
+    TomlError(#[from] TomlError),
     #[cfg(feature = "eval")]
+    #[error("{}", .1.display(.0))]
     EvalError(EvalError, Box<TyContext>),
+    #[error("{0}")]
     Custom(String),
-}
-
-impl std::error::Error for Error {}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::ParseError(err) => err.fmt(f),
-            Error::ValidateError(err) => err.fmt(f),
-            Error::ResolveError(err) => err.fmt(f),
-            Error::ImportError(err) => err.fmt(f),
-            Error::UsageError(err) => err.fmt(f),
-            Error::CondCompError(err) => err.fmt(f),
-            Error::TomlError(err) => err.fmt(f),
-            #[cfg(feature = "eval")]
-            Error::EvalError(err, context) => err.fmt(f, context),
-            Error::Custom(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-impl DisplayWithContext for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>, _context: &TyContext) -> std::fmt::Result {
-        match self {
-            Error::ParseError(err) => err.fmt(f),
-            Error::ValidateError(err) => err.fmt(f),
-            Error::ResolveError(err) => err.fmt(f),
-            Error::ImportError(err) => err.fmt(f),
-            Error::UsageError(err) => err.fmt(f),
-            Error::CondCompError(err) => err.fmt(f),
-            Error::TomlError(err) => err.fmt(f),
-            #[cfg(feature = "eval")]
-            Error::EvalError(err, _) => err.fmt(f, _context),
-            Error::Custom(msg) => write!(f, "{}", msg),
-        }
-    }
-}
-
-impl From<wgsl_parse::Error> for Error {
-    fn from(source: wgsl_parse::Error) -> Self {
-        Error::ParseError(source)
-    }
-}
-impl From<ValidateError> for Error {
-    fn from(source: ValidateError) -> Self {
-        Error::ValidateError(source)
-    }
-}
-impl From<ResolveError> for Error {
-    fn from(source: ResolveError) -> Self {
-        Error::ResolveError(source)
-    }
-}
-impl From<ImportError> for Error {
-    fn from(source: ImportError) -> Self {
-        Error::ImportError(source)
-    }
-}
-impl From<UsageError> for Error {
-    fn from(source: UsageError) -> Self {
-        Error::UsageError(source)
-    }
-}
-impl From<CondCompError> for Error {
-    fn from(source: CondCompError) -> Self {
-        Error::CondCompError(source)
-    }
-}
-impl From<TomlError> for Error {
-    fn from(source: TomlError) -> Self {
-        Error::TomlError(source)
-    }
 }
 
 /// Error diagnostics. Display user-friendly error snippets with `Display`.
