@@ -1,7 +1,7 @@
 use std::iter::Peekable;
 
 use itertools::Itertools;
-use proc_macro_error2::{abort, abort_call_site};
+use proc_macro_error3::{abort, abort_call_site};
 use proc_macro2::{Ident, Literal, Punct, Spacing, TokenStream};
 use token_stream_flatten::{
     Delimiter, DelimiterKind, DelimiterPosition, FlattenRec, Token as RustToken,

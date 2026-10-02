@@ -2,7 +2,7 @@
 
 mod quote_macro;
 
-use proc_macro_error2::proc_macro_error;
+use proc_macro_error3::proc_macro_error;
 use quote_macro::{QuoteNodeKind, quote_impl};
 
 #[proc_macro_error]
