@@ -290,7 +290,7 @@ fn eval_opt_attr(
 ) -> Result<(), E> {
     if let Some(node) = opt_node {
         eval_if_attr(node, prev, features)?;
-        if prev.chain_has_true && !prev.is_false {
+        if prev.is_false {
             *opt_node = None;
         }
     }
