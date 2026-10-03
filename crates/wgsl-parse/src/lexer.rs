@@ -211,12 +211,12 @@ fn parse_line_comment(lex: &mut logos::Lexer<Token>) {
     lex.bump(line_end);
 }
 
-fn parse_block_comment(lex: &mut logos::Lexer<Token>) {
+fn parse_block_comment(lex: &mut logos::Lexer<Token>) -> Option<()> {
     let mut depth = 1;
     while depth > 0 {
         let rem = lex.remainder();
         if rem.is_empty() {
-            break;
+            return None;
         } else if rem.starts_with("/*") {
             lex.bump(2);
             depth += 1;
@@ -231,6 +231,7 @@ fn parse_block_comment(lex: &mut logos::Lexer<Token>) {
             lex.bump(next_char);
         }
     }
+    Some(())
 }
 
 fn parse_ident(lex: &mut logos::Lexer<Token>) -> Token {
@@ -756,7 +757,7 @@ impl<'s> Lexer<'s> {
     pub fn new(source: &'s str) -> Self {
         let mut token_stream = Token::lexer_with_extras(source, LexerState::default()).spanned();
         let next_token =
-            token_stream.find(|(tok, _)| tok.as_ref().is_ok_and(|tok| !tok.is_trivia()));
+            token_stream.find(|(tok, _)| !tok.as_ref().is_ok_and(|tok| tok.is_trivia()));
 
         Self {
             source,
@@ -779,7 +780,7 @@ impl<'s> Lexer<'s> {
             }
             None => self
                 .token_stream
-                .find(|(tok, _)| tok.as_ref().is_ok_and(|tok| !tok.is_trivia())),
+                .find(|(tok, _)| !tok.as_ref().is_ok_and(|tok| tok.is_trivia())),
         };
 
         (tok1, tok2)
@@ -878,3 +879,10 @@ impl Iterator for Lexer<'_> {
 }
 
 impl TokenIterator for Lexer<'_> {}
+
+#[test]
+fn test_lexer_errors() {
+    assert!(crate::parse_str("const value = 1 $ + 2;").is_err());
+    assert!(crate::parse_str("/* outer /* inner */").is_err());
+    assert!(crate::parse_str("/* outer /* inner */ */").is_ok());
+}
