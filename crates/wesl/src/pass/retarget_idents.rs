@@ -106,15 +106,17 @@ pub fn retarget_idents(module: &mut TranslationUnit) {
     }
 
     fn retarget_ty(ty: &mut TypeExpression, scope: &Scope) {
-        if let Some((_, id)) = scope
-            .iter()
-            .find(|(name, _)| name.as_str() == *ty.ident.name())
-        {
-            ty.ident = id.clone();
-        } else {
-            let builtin = builtin_ident(&ty.ident.name()).cloned();
-            if let Some(id) = builtin {
-                ty.ident = id;
+        if ty.path.is_none() {
+            if let Some((_, id)) = scope
+                .iter()
+                .find(|(name, _)| name.as_str() == *ty.ident.name())
+            {
+                ty.ident = id.clone();
+            } else {
+                let builtin = builtin_ident(&ty.ident.name()).cloned();
+                if let Some(id) = builtin {
+                    ty.ident = id;
+                }
             }
         }
         query_mut!(ty.template_args.[].[].expression.(x => Visit::<TypeExpression>::visit_mut(&mut **x)))
@@ -609,4 +611,13 @@ fn test_retarget_idents() {
     println!("=== test output ===\n{module_stripped}");
 
     assert_eq!(module.to_string(), module_stripped.to_string())
+}
+
+#[test]
+fn test_qualified_reference() {
+    let mut module: TranslationUnit = "fn value() -> u32 { return package::helper::value(); }"
+        .parse()
+        .unwrap();
+    retarget_idents(&mut module);
+    assert!(crate::pass::validate_wesl(&module).is_ok());
 }
