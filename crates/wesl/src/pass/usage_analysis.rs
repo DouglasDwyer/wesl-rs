@@ -184,7 +184,7 @@ pub fn usage_analysis(
                 .is_some_and(|ident| &**ident.name() == decl_name)
         }) {
             // we found a declaration with the right name, let's analyze it.
-            if decl.visibility() < min_vis {
+            if !ignore_visibility && decl.visibility() < min_vis {
                 return Err(UsageError::Visibility {
                     orig: None,
                     decl: (
@@ -285,4 +285,26 @@ fn decl_usage_analysis(
     });
 
     res
+}
+
+#[test]
+fn test_ignore_visibility() {
+    let module = Module::new(
+        "library".parse().unwrap(),
+        "private fn value() {}".parse().unwrap(),
+    );
+    for ignore_visibility in [false, true] {
+        assert_eq!(
+            usage_analysis(
+                &module,
+                "value",
+                Visibility::Public,
+                &mut UsedItems::new(),
+                &mut UsedItems::new(),
+                ignore_visibility,
+            )
+            .is_ok(),
+            ignore_visibility,
+        );
+    }
 }
