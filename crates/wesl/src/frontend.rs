@@ -15,7 +15,7 @@ use wgsl_parse::{
 
 use crate::{
     SyntaxUtil,
-    error::{Diagnostic, Error, ResolveError, UsageError},
+    error::{Diagnostic, Error, ResolveError, UsageError, ValidateError},
     mangler::{self, Mangler},
     pass::{self, CompilerDriver, Features, Module, UsedItems},
     resolver::{Constants, Resolver, StandardResolver},
@@ -48,7 +48,8 @@ pub struct CompileOptions {
     /// Enable stripping (aka. Dead Code Elimination).
     ///
     /// By default, all declarations reachable by entrypoint functions, const_asserts and
-    /// pipeline-overridable constants in the main module are kept.
+    /// pipeline-overridable constants in the main module are kept, as well as items that
+    /// the main module re-exports with `public import` (see [`Self::visibility`]).
     /// See [`Self::keep`] and [`Self::keep_main`] to control what gets stripped.
     ///
     /// Stripping can have side-effects: modules are loaded only if statically accessed,
@@ -73,9 +74,13 @@ pub struct CompileOptions {
     /// Enable mangling of declarations in the main module.
     ///
     /// By default, WESL does not mangle main module declarations.
+    ///
+    /// Items re-exported by the main module with `public import` are never mangled: they keep
+    /// their imported name, or their `as` alias if renamed.
     pub mangle_main: bool,
     /// If `Some`, specify a list of main module declarations to keep.
-    /// If `None`, only the entrypoint functions (and their dependencies) are kept.
+    /// If `None`, only the entrypoint functions (and their dependencies) are kept, plus items
+    /// re-exported by the main module with `public import`.
     ///
     /// This option has no effect if [`Self::keep_main`] is enabled or  [`Self::strip`] is
     /// disabled.
@@ -554,18 +559,12 @@ impl<'a> CompilationPass<'a> {
             mangler,
         }
     }
-}
 
-impl CompilerDriver for CompilationPass<'_> {
-    fn main_path(&self) -> &ModulePath {
-        self.main_path
-    }
-
-    fn canonical_path(&self, path: &ModulePath) -> ModulePath {
-        self.resolver.canonical_path(path)
-    }
-
-    fn main_entry_points(&self, main_module: &TranslationUnit) -> Result<HashSet<Ident>, Error> {
+    /// The main module declarations serving as roots, according to [`CompileOptions`].
+    fn declared_entry_points(
+        &self,
+        main_module: &TranslationUnit,
+    ) -> Result<HashSet<Ident>, Error> {
         // keep all declarations when strip is disabled or keep_main is enabled.
         if !self.options.strip || self.options.keep_main {
             Ok(main_module
@@ -588,6 +587,102 @@ impl CompilerDriver for CompilationPass<'_> {
         else {
             Ok(main_module.entry_points().collect())
         }
+    }
+
+    /// Names that `public import`s in the main module expose in the output.
+    ///
+    /// Pipeline-visible items keep their imported name (or their `as` alias) in the linked
+    /// output instead of being mangled.
+    ///
+    /// Must be called before mangling, because it looks up declarations by name.
+    fn exposed_names(&self, modules: &[Module]) -> Result<Vec<(Ident, String)>, Error> {
+        let Some(main) = modules.iter().find(|module| module.path == *self.main_path) else {
+            return Ok(Vec::new());
+        };
+
+        let mut exposed: Vec<(Ident, String)> = Vec::new();
+        for (alias, item) in &main.imports {
+            if item.visibility != Visibility::Public {
+                continue;
+            }
+            let Some((decl_path, decl_ident)) =
+                self.resolve_reexport(modules, &item.path, &item.ident.name())
+            else {
+                continue;
+            };
+            if decl_path == *self.main_path {
+                continue; // main module declarations are not mangled by default.
+            }
+            let name = alias.name().to_string();
+            match exposed.iter().find(|(ident, _)| *ident == decl_ident) {
+                Some((_, other)) if *other == name => {}
+                Some((_, other)) => {
+                    return Err(Error::Custom(format!(
+                        "`{decl_path}::{}` is re-exported by the main module as both `{other}` and `{name}`, which is not supported",
+                        decl_ident.name()
+                    )));
+                }
+                None => exposed.push((decl_ident, name)),
+            }
+        }
+        Ok(exposed)
+    }
+
+    /// Find the declaration which `name` in module `path` refers to, following re-exports.
+    fn resolve_reexport(
+        &self,
+        modules: &[Module],
+        path: &ModulePath,
+        name: &str,
+    ) -> Option<(ModulePath, Ident)> {
+        let mut path = self.resolver.canonical_path(path);
+        let mut name = name.to_string();
+        // bounded, to be robust against re-export cycles.
+        for _ in 0..=modules.len() {
+            let module = modules.iter().find(|module| module.path == path)?;
+            let decl = module
+                .syntax
+                .global_declarations
+                .iter()
+                .filter_map(|decl| decl.ident())
+                .find(|ident| *ident.name() == name);
+            if let Some(ident) = decl {
+                return Some((path, ident));
+            }
+            let (_, item) = module
+                .imports
+                .iter()
+                .find(|(ident, _)| *ident.name() == name)?;
+            path = self.resolver.canonical_path(&item.path);
+            name = item.ident.name().to_string();
+        }
+        None
+    }
+}
+
+impl CompilerDriver for CompilationPass<'_> {
+    fn main_path(&self) -> &ModulePath {
+        self.main_path
+    }
+
+    fn canonical_path(&self, path: &ModulePath) -> ModulePath {
+        self.resolver.canonical_path(path)
+    }
+
+    fn main_entry_points(&self, main_module: &TranslationUnit) -> Result<HashSet<Ident>, Error> {
+        let mut roots = self.declared_entry_points(main_module)?;
+        // items re-exported by the main module with `public import` are part of the
+        // pipeline-visible API: they are roots of static usage analysis, even though
+        // nothing in the main module references them.
+        if self.options.visibility {
+            roots.extend(
+                pass::flatten_imports(&main_module.imports, self.main_path)
+                    .into_iter()
+                    .filter(|(_, item)| item.visibility == Visibility::Public)
+                    .map(|(ident, _)| ident),
+            );
+        }
+        Ok(roots)
     }
 
     fn module_usage_analysis(
@@ -659,11 +754,37 @@ impl CompilerDriver for CompilationPass<'_> {
     ) -> Result<TranslationUnit, Error> {
         pass::retarget_modules(modules, used_items, &self.resolver);
 
+        let exposed = if self.options.visibility {
+            self.exposed_names(modules)?
+        } else {
+            Vec::new()
+        };
+
         for module in modules.iter_mut() {
             if !self.options.mangle_main && module.path == *self.main_path {
                 continue;
             }
             pass::mangle(&mut module.syntax, &module.path, &self.mangler);
+        }
+
+        // pipeline-visible items re-exported by the main module keep their exposed names.
+        // idents are shared, so renaming a declaration also renames all references to it.
+        if !exposed.is_empty() {
+            let mut taken = modules
+                .iter()
+                .flat_map(|module| module.syntax.global_declarations.iter())
+                .filter_map(|decl| decl.ident())
+                .filter(|ident| !exposed.iter().any(|(exposed, _)| exposed == ident))
+                .map(|ident| ident.name().to_string())
+                .collect::<HashSet<_>>();
+            for (_, name) in &exposed {
+                if !taken.insert(name.clone()) {
+                    return Err(ValidateError::Duplicate(name.clone()).into());
+                }
+            }
+            for (mut ident, name) in exposed {
+                ident.rename(name);
+            }
         }
 
         let mut module = pass::link(modules, self.options.strip.then_some(used_items));

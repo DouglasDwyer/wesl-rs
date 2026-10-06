@@ -6,6 +6,8 @@ diagnostic (off, derivative_uniformity);
 
 const K: f32 = 2.0;
 
+const ROOT_SECRET: f32 = 0.5;
+
 const constants_PI = 3.141592653589793;
 
 const constants_TRUE = true;
@@ -20,16 +22,16 @@ const package_util__1INTERNAL_SCALE: f32 = 2.0;
 
 const package_util_ops__1OPS_BASE: f32 = 4.0;
 
-override package_gfx_exposure: f32 = 1.0;
+override exposure: f32 = 1.0;
 
-override package_gfx_gain: f32 = package_gfx_exposure * 2.0;
+override package_gfx_gain: f32 = exposure * 2.0;
 
 override root_boost: f32 = 2.0;
 
 var<private> counter: u32 = 0u;
 
 @group(0) @binding(0)
-var<storage, read_write> package_gfx__1scene_data: array<vec4f>;
+var<storage, read_write> scene_data: array<vec4f>;
 
 struct Aux {
     n: u32,
@@ -52,6 +54,12 @@ const_assert constants_TRUE;
 const_assert package__1cycle_a__1A_OFFSET > 0.0;
 
 const_assert package_util_ops__1OPS_BASE > 0.0;
+
+@fragment
+fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let m = package_util_dot2(pos.xy, pos.xy);
+    return vec4f(m * constants_PI + package_gfx_tonemap(pos.xy));
+}
 
 @compute @workgroup_size(1)
 fn my_compute(@builtin(global_invocation_id) gid: vec3u) {
@@ -95,7 +103,7 @@ fn my_compute(@builtin(global_invocation_id) gid: vec3u) {
     for (var t = 0u; t < 4u; t++) {
         continue;
     }
-    package_gfx__1scene_data[gid.x] = vec4f(acc + b + c + e + g + i);
+    scene_data[gid.x] = vec4f(acc + b + c + e + g + i);
 }
 
 fn package__1cycle_a_ping(x: f32) -> f32 {
@@ -165,9 +173,18 @@ fn random_noise_value__1value_noise(p: f32) -> f32 {
     return mix(random_hash_rand11(fl), random_hash_rand11(fl + 1.0), fract(p));
 }
 
+fn util() -> f32 {
+    return ROOT_SECRET * 8.0;
+}
+
 @compute @workgroup_size(2)
 fn variant() {
-    package_gfx__1scene_data[1] = vec4f(K);
+    scene_data[1] = vec4f(K);
+}
+
+@vertex
+fn vert_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+    return vec4f(f32(vi) * util(), 0.0, 0.0, 1.0);
 }
 
 fn weight(x: f32, boost: f32) -> f32 {

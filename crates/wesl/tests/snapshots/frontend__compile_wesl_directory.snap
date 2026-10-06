@@ -20,14 +20,14 @@ const package_util__1INTERNAL_SCALE: f32 = 2.0;
 
 const package_util_ops__1OPS_BASE: f32 = 4.0;
 
+override exposure: f32 = 1.0;
+
 override package__1root_boost: f32 = 2.0;
 
-override package_gfx_exposure: f32 = 1.0;
-
-override package_gfx_gain: f32 = package_gfx_exposure * 2.0;
+override package_gfx_gain: f32 = exposure * 2.0;
 
 @group(0) @binding(0)
-var<storage, read_write> package_gfx__1scene_data: array<vec4f>;
+var<storage, read_write> scene_data: array<vec4f>;
 
 struct package_Aux {
     n: u32,
@@ -48,6 +48,12 @@ const_assert constants_TRUE;
 const_assert package__1cycle_a__1A_OFFSET > 0.0;
 
 const_assert package_util_ops__1OPS_BASE > 0.0;
+
+@fragment
+fn fs_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    let m = package_util_dot2(pos.xy, pos.xy);
+    return vec4f(m * constants_PI + package_gfx_tonemap(pos.xy));
+}
 
 fn package__1cycle_a_ping(x: f32) -> f32 {
     return x + package__1cycle_a__1A_OFFSET;
@@ -94,18 +100,7 @@ fn package__1my_compute(@builtin(global_invocation_id) gid: vec3u) {
     for (var t = 0u; t < 4u; t++) {
     
     }
-    package_gfx__1scene_data[gid.x] = vec4f(acc + b + c + e + g + i);
-}
-
-@fragment
-fn package_gfx__1frag_main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
-    let m = package_util_dot2(pos.xy, pos.xy);
-    return vec4f(m * constants_PI + package_gfx_tonemap(pos.xy));
-}
-
-@vertex
-fn package_gfx__1vert_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
-    return vec4f(f32(vi) * package_util(), 0.0, 0.0, 1.0);
+    scene_data[gid.x] = vec4f(acc + b + c + e + g + i);
 }
 
 fn package_gfx_tonemap(c: vec2f) -> f32 {
@@ -164,7 +159,7 @@ fn package_util_ops_shift(x: f32) -> f32 {
 
 @compute @workgroup_size(2)
 fn package_variant() {
-    package_gfx__1scene_data[1] = vec4f(package_K);
+    scene_data[1] = vec4f(package_K);
 }
 
 fn package_weight(x: f32) -> f32 {
@@ -197,4 +192,9 @@ fn random_noise_value__1value_noise2(n: vec2f) -> f32 {
     let b = floor(n);
     let f = smoothstep(vec2f(0.0), vec2f(1.0), fract(n));
     return mix(mix(random_hash_rand22(b), random_hash_rand22(b + d.yx), f.x), mix(random_hash_rand22(b + d.xy), random_hash_rand22(b + d.yy), f.x), f.y);
+}
+
+@vertex
+fn vert_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
+    return vec4f(f32(vi) * package_util(), 0.0, 0.0, 1.0);
 }
