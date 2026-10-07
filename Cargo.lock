@@ -1565,6 +1565,7 @@ dependencies = [
  "half",
  "insta",
  "itertools 0.15.0",
+ "naga",
  "num-traits",
  "proc-macro2",
  "quote",
