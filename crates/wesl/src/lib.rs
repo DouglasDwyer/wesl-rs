@@ -16,7 +16,7 @@ pub mod mangler;
 pub mod package;
 pub mod pass;
 pub mod resolver;
-pub mod sourcemap;
+pub mod source_map;
 pub mod toml_cfg;
 
 pub use crate::{

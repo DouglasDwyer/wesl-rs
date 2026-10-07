@@ -20,7 +20,7 @@ use crate::{
     mangler::{self, Mangler},
     pass::{self, CompilerDriver, Features, Module, UsedItems},
     resolver::{Constants, Resolver, StandardResolver},
-    sourcemap::{BasicSourceMap, SourceMapper},
+    source_map::{BasicSourceMap, SourceMapper},
 };
 
 /// Compilation options used by [`Compiler`].
@@ -68,8 +68,8 @@ pub struct CompileOptions {
     ///
     /// Requires the `eval` crate feature flag.
     pub validate: bool,
-    /// Enable sourcemapping, which provides better error diagnostics.
-    pub sourcemap: bool,
+    /// Enable source mapping, which provides better error diagnostics.
+    pub source_map: bool,
     /// Sort the declarations of the output with [`TranslationUnit::sort_declarations`].
     ///
     /// This makes the output independent of the order in which modules were linked.
@@ -147,7 +147,7 @@ impl Default for CompileOptions {
             strip: true,
             lower: false,
             validate: true,
-            sourcemap: true,
+            source_map: true,
             sort_declarations: false,
             mangler: Default::default(),
             mangle_main: false,
@@ -234,14 +234,14 @@ pub fn compile(
 ) -> Result<CompileResult, Error> {
     let mangler = Box::<dyn Mangler>::from(options.mangler);
 
-    if options.sourcemap {
-        let sourcemapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
-        let mut pass = CompilationPass::new(main_path, options, &sourcemapper, &sourcemapper);
+    if options.source_map {
+        let source_mapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
+        let mut pass = CompilationPass::new(main_path, options, &source_mapper, &source_mapper);
         let res = CompilerDriver::compile(&mut pass);
-        let sourcemap = sourcemapper.finish();
-        let res = res.map_err(|e| Diagnostic::from(e).with_sourcemap(&sourcemap))?;
+        let source_map = source_mapper.finish();
+        let res = res.map_err(|e| Diagnostic::from(e).with_source_map(&source_map))?;
 
-        Ok(CompileResult::new(res, Some(sourcemap)))
+        Ok(CompileResult::new(res, Some(source_map)))
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
         let res = CompilerDriver::compile(&mut pass)?;
@@ -257,14 +257,14 @@ pub async fn compile_async(
 ) -> Result<CompileResult, Error> {
     let mangler = Box::<dyn Mangler>::from(options.mangler);
 
-    if options.sourcemap {
-        let sourcemapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
-        let mut pass = CompilationPass::new(main_path, options, &sourcemapper, &sourcemapper);
+    if options.source_map {
+        let source_mapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
+        let mut pass = CompilationPass::new(main_path, options, &source_mapper, &source_mapper);
         let res = CompilerDriver::compile_async(&mut pass).await;
-        let sourcemap = sourcemapper.finish();
-        let res = res.map_err(|e| Diagnostic::from(e).with_sourcemap(&sourcemap))?;
+        let source_map = source_mapper.finish();
+        let res = res.map_err(|e| Diagnostic::from(e).with_source_map(&source_map))?;
 
-        Ok(CompileResult::new(res, Some(sourcemap)))
+        Ok(CompileResult::new(res, Some(source_map)))
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
         let res = CompilerDriver::compile_async(&mut pass).await?;
@@ -444,14 +444,14 @@ impl<R: Resolver> Compiler<R> {
 
 /// Result of [`Compiler::compile`].
 ///
-/// This type contains the resulting WGSL syntax tree, the sourcemap (if enabled),
+/// This type contains the resulting WGSL syntax tree, the source map (if enabled),
 /// and the list of used modules/declarations.
 ///
 /// It implements [`std::fmt::Display`], call `to_string()` to get the compiled WGSL.
 #[derive(Default, Clone)]
 pub struct CompileResult {
     modules: Vec<Module>,
-    sourcemap: Option<BasicSourceMap>,
+    source_map: Option<BasicSourceMap>,
     syntax: TranslationUnit,
     used_items: UsedItems,
     wgsl: Arc<str>,
@@ -468,9 +468,9 @@ impl CompileResult {
         &self.modules
     }
 
-    /// The sourcemap, if [`CompileOptions::sourcemap`] is enabled.
-    pub fn sourcemap(&self) -> Option<&BasicSourceMap> {
-        self.sourcemap.as_ref()
+    /// The source map, if [`CompileOptions::source_map`] is enabled.
+    pub fn source_map(&self) -> Option<&BasicSourceMap> {
+        self.source_map.as_ref()
     }
 
     /// The syntax tree of the compiled WGSL.
@@ -484,11 +484,11 @@ impl CompileResult {
     }
 
     /// Creates the result of a compilation, printing the compiled WGSL.
-    fn new(res: pass::CompileResult, sourcemap: Option<BasicSourceMap>) -> Self {
+    fn new(res: pass::CompileResult, source_map: Option<BasicSourceMap>) -> Self {
         let wgsl = res.syntax.to_string().into();
         Self {
             modules: res.modules,
-            sourcemap,
+            source_map,
             syntax: res.syntax,
             used_items: res.used_items,
             wgsl,
@@ -503,8 +503,8 @@ impl CompileResult {
     /// Emit `rerun-if-changed` instructions so the build script reruns only if the
     /// shader files are modified.
     pub fn emit_rerun_if_changed(&self) {
-        let Some(sourcemap) = &self.sourcemap else {
-            println!("cargo::warning=cannot emit rerun-if-changed directive without a sourcemap");
+        let Some(source_map) = &self.source_map else {
+            println!("cargo::warning=cannot emit rerun-if-changed directive without a source map");
             return;
         };
 
@@ -516,7 +516,7 @@ impl CompileResult {
                 !module_path.origin.is_relative(),
                 "the modules passed to emit_rerun_if_changed must be absolute"
             );
-            if let Some(source) = sourcemap.file(module_path)
+            if let Some(source) = source_map.file(module_path)
                 && let Some(fs_path) = &source.path
             {
                 // Path::display is safe here because of the ModulePath naming restrictions

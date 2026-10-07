@@ -145,9 +145,9 @@ struct CompOptsArgs {
     /// Name mangling strategy
     #[arg(long, default_value = "escape")]
     mangler: ClapManglerKind,
-    /// Show nicer error messages by computing a sourcemap
+    /// Show nicer error messages by computing a source map
     #[arg(long)]
-    no_sourcemap: bool,
+    no_source_map: bool,
     /// Disable imports
     #[arg(long)]
     no_imports: bool,
@@ -228,7 +228,7 @@ impl TryFrom<&CompOptsArgs> for CompileOptions {
             strip: !opts.no_strip,
             lower: opts.lower,
             validate: !opts.no_validate,
-            sourcemap: !opts.no_sourcemap,
+            source_map: !opts.no_source_map,
             sort_declarations: false,
             mangle_main: opts.mangle_main,
             keep: if opts.no_strip {

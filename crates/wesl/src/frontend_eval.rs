@@ -88,8 +88,8 @@ impl CompileResult {
                 .with_ctx(&ctx)
         });
 
-        let inst = if let Some(sourcemap) = self.sourcemap() {
-            inst.map_err(|e| Error::Error(e.with_sourcemap(sourcemap)))
+        let inst = if let Some(source_map) = self.source_map() {
+            inst.map_err(|e| Error::Error(e.with_source_map(source_map)))
         } else {
             inst.map_err(Error::Error)
         }?;
@@ -126,8 +126,10 @@ impl CompileResult {
             if let Some(span) = ctx.source.user_decl_span(entrypoint) {
                 ctx.set_err_span_ctx(span);
             }
-            if let Some(sourcemap) = self.sourcemap() {
-                Diagnostic::from(e).with_ctx(&ctx).with_sourcemap(sourcemap)
+            if let Some(source_map) = self.source_map() {
+                Diagnostic::from(e)
+                    .with_ctx(&ctx)
+                    .with_source_map(source_map)
             } else {
                 Diagnostic::from(e).with_ctx(&ctx)
             }

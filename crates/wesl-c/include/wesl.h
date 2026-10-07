@@ -87,7 +87,7 @@ typedef struct WeslCompileOptions {
   bool strip;
   bool lower;
   bool validate;
-  bool sourcemap;
+  bool source_map;
   WeslManglerKind mangler;
   bool mangle_main;
   struct WeslStringArray keep;

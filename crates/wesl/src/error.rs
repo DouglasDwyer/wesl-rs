@@ -10,7 +10,7 @@ use wgsl_parse::{
 
 #[cfg(feature = "eval")]
 use crate::eval::EvalError;
-use crate::{Mangler, sourcemap::SourceMap};
+use crate::{Mangler, source_map::SourceMap};
 
 /// Conditional translation error.
 #[derive(Debug, Error)]
@@ -299,18 +299,18 @@ impl<E> Diagnostic<E> {
         self
     }
 
-    /// Add metadata collected by the sourcemap. If the mangled declaration name was set,
+    /// Add metadata collected by the source map. If the mangled declaration name was set,
     /// this will automatically add the source, the module path and the declaration name.
-    pub fn with_sourcemap(mut self, sourcemap: &impl SourceMap) -> Self {
+    pub fn with_source_map(mut self, source_map: &impl SourceMap) -> Self {
         if let Some(decl) = &self.detail.declaration
-            && let Some(entry) = sourcemap.item(decl)
+            && let Some(entry) = source_map.item(decl)
         {
             self.detail.module_path = Some(entry.path.clone());
             self.detail.declaration = Some(entry.name.to_string());
-            self.detail.display_name = sourcemap
+            self.detail.display_name = source_map
                 .display_name(&entry.path)
                 .map(|name| name.to_string());
-            self.detail.source = sourcemap
+            self.detail.source = source_map
                 .source(&entry.path)
                 .map(|s| s.to_string())
                 .or(self.detail.source);
@@ -318,9 +318,9 @@ impl<E> Diagnostic<E> {
 
         if self.detail.source.is_none() {
             if let Some(path) = &self.detail.module_path {
-                self.detail.source = sourcemap.source(path).map(|s| s.to_string());
+                self.detail.source = source_map.source(path).map(|s| s.to_string());
             } else {
-                self.detail.source = sourcemap.default_source().map(|s| s.to_string());
+                self.detail.source = source_map.default_source().map(|s| s.to_string());
             }
         }
 
@@ -351,21 +351,21 @@ impl Diagnostic<Error> {
     /// unmangle any mangled identifiers in the error.
     ///
     /// The mangled must be the same used for compiling the WGSL source. It must have
-    /// unmangling capabilities. If not, you might want to use a [`crate::sourcemap::SourceMapper`].
+    /// unmangling capabilities. If not, you might want to use a [`crate::source_map::SourceMapper`].
     // TODO: this is no longer used, but should
     #[allow(dead_code, reason = "TODO this should be re-added")]
     fn unmangle(
         mut self,
-        sourcemap: Option<&impl SourceMap>,
+        source_map: Option<&impl SourceMap>,
         mangler: Option<&impl Mangler>,
     ) -> Self {
         fn unmangle_id(
             id: &mut Ident,
-            sourcemap: Option<&impl SourceMap>,
+            source_map: Option<&impl SourceMap>,
             mangler: Option<&impl Mangler>,
         ) {
-            let path_name = if let Some(sourcemap) = sourcemap {
-                sourcemap
+            let path_name = if let Some(source_map) = source_map {
+                source_map
                     .item(&id.name())
                     .map(|entry| (entry.path.clone(), entry.name.to_string()))
             } else if let Some(mangler) = mangler {
@@ -380,11 +380,11 @@ impl Diagnostic<Error> {
 
         fn unmangle_name(
             mangled: &mut String,
-            sourcemap: Option<&impl SourceMap>,
+            source_map: Option<&impl SourceMap>,
             mangler: Option<&impl Mangler>,
         ) {
-            let path_name = if let Some(sourcemap) = sourcemap {
-                sourcemap
+            let path_name = if let Some(source_map) = source_map {
+                source_map
                     .item(mangled)
                     .map(|entry| (entry.path.clone(), entry.name.to_string()))
             } else if let Some(mangler) = mangler {
@@ -399,50 +399,50 @@ impl Diagnostic<Error> {
 
         fn unmangle_expr(
             expr: &mut Expression,
-            sourcemap: Option<&impl SourceMap>,
+            source_map: Option<&impl SourceMap>,
             mangler: Option<&impl Mangler>,
         ) {
             match expr {
                 Expression::Literal(_) => {}
                 Expression::Parenthesized(e) => {
-                    unmangle_expr(&mut e.expression, sourcemap, mangler)
+                    unmangle_expr(&mut e.expression, source_map, mangler)
                 }
-                Expression::NamedComponent(e) => unmangle_expr(&mut e.base, sourcemap, mangler),
-                Expression::Indexing(e) => unmangle_expr(&mut e.base, sourcemap, mangler),
-                Expression::Unary(e) => unmangle_expr(&mut e.operand, sourcemap, mangler),
+                Expression::NamedComponent(e) => unmangle_expr(&mut e.base, source_map, mangler),
+                Expression::Indexing(e) => unmangle_expr(&mut e.base, source_map, mangler),
+                Expression::Unary(e) => unmangle_expr(&mut e.operand, source_map, mangler),
                 Expression::Binary(e) => {
-                    unmangle_expr(&mut e.left, sourcemap, mangler);
-                    unmangle_expr(&mut e.right, sourcemap, mangler);
+                    unmangle_expr(&mut e.left, source_map, mangler);
+                    unmangle_expr(&mut e.right, source_map, mangler);
                 }
                 Expression::FunctionCall(e) => {
-                    unmangle_id(&mut e.ty.ident, sourcemap, mangler);
+                    unmangle_id(&mut e.ty.ident, source_map, mangler);
                     for arg in &mut e.arguments {
-                        unmangle_expr(arg, sourcemap, mangler);
+                        unmangle_expr(arg, source_map, mangler);
                     }
                 }
-                Expression::TypeOrIdentifier(ty) => unmangle_id(&mut ty.ident, sourcemap, mangler),
+                Expression::TypeOrIdentifier(ty) => unmangle_id(&mut ty.ident, source_map, mangler),
             }
         }
 
         #[cfg(feature = "eval")]
         fn unmangle_ty(
             mangled: &mut wgsl_types::ty::Type,
-            sourcemap: Option<&impl SourceMap>,
+            source_map: Option<&impl SourceMap>,
             mangler: Option<&impl Mangler>,
         ) {
             use wgsl_types::ty::Type;
             match mangled {
                 // TODO unmangle components!
                 Type::Struct(s) => {
-                    unmangle_name(&mut s.name, sourcemap, mangler);
+                    unmangle_name(&mut s.name, source_map, mangler);
                     for m in s.members.iter_mut() {
-                        unmangle_ty(&mut m.ty, sourcemap, mangler);
+                        unmangle_ty(&mut m.ty, source_map, mangler);
                     }
                 }
-                Type::Array(ty, _) => unmangle_ty(&mut *ty, sourcemap, mangler),
-                Type::Atomic(ty) => unmangle_ty(&mut *ty, sourcemap, mangler),
-                Type::Ptr(_, ty, _) => unmangle_ty(&mut *ty, sourcemap, mangler),
-                Type::Ref(_, ty, _) => unmangle_ty(&mut *ty, sourcemap, mangler),
+                Type::Array(ty, _) => unmangle_ty(&mut *ty, source_map, mangler),
+                Type::Atomic(ty) => unmangle_ty(&mut *ty, source_map, mangler),
+                Type::Ptr(_, ty, _) => unmangle_ty(&mut *ty, source_map, mangler),
+                Type::Ref(_, ty, _) => unmangle_ty(&mut *ty, source_map, mangler),
                 _ => (),
             }
         }
@@ -450,38 +450,38 @@ impl Diagnostic<Error> {
         #[cfg(feature = "eval")]
         fn unmangle_inst(
             mangled: &mut wgsl_types::inst::Instance,
-            sourcemap: Option<&impl SourceMap>,
+            source_map: Option<&impl SourceMap>,
             mangler: Option<&impl Mangler>,
         ) {
             use wgsl_types::inst::Instance;
             match mangled {
                 Instance::Struct(inst) => {
-                    unmangle_name(&mut inst.ty.name, sourcemap, mangler);
+                    unmangle_name(&mut inst.ty.name, source_map, mangler);
                     for inst in inst.members.iter_mut() {
-                        unmangle_inst(inst, sourcemap, mangler);
+                        unmangle_inst(inst, source_map, mangler);
                     }
                 }
                 Instance::Array(inst) => {
                     for c in inst.iter_mut() {
-                        unmangle_inst(c, sourcemap, mangler);
+                        unmangle_inst(c, source_map, mangler);
                     }
                 }
                 Instance::Ptr(inst) => {
-                    unmangle_ty(&mut inst.ptr.ty, sourcemap, mangler);
+                    unmangle_ty(&mut inst.ptr.ty, source_map, mangler);
                 }
                 Instance::Ref(inst) => {
-                    unmangle_ty(&mut inst.ty, sourcemap, mangler);
+                    unmangle_ty(&mut inst.ty, source_map, mangler);
                 }
                 Instance::Atomic(inst) => {
-                    unmangle_inst(inst.inner_mut(), sourcemap, mangler);
+                    unmangle_inst(inst.inner_mut(), source_map, mangler);
                 }
-                Instance::Opaque(ty) => unmangle_ty(ty, sourcemap, mangler),
+                Instance::Opaque(ty) => unmangle_ty(ty, source_map, mangler),
                 Instance::Literal(_) | Instance::Vec(_) | Instance::Mat(_) => {}
             }
         }
 
         if let Some(decl) = &mut self.detail.declaration {
-            unmangle_name(decl, sourcemap, mangler);
+            unmangle_name(decl, source_map, mangler);
         }
 
         match &mut *self.error {
@@ -490,10 +490,10 @@ impl Diagnostic<Error> {
                 ValidateError::UndefinedSymbol(name)
                 | ValidateError::ParamCount(name, _, _)
                 | ValidateError::NotCallable(name)
-                | ValidateError::Duplicate(name) => unmangle_name(name, sourcemap, mangler),
+                | ValidateError::Duplicate(name) => unmangle_name(name, source_map, mangler),
                 ValidateError::Cycle(name1, name2) => {
-                    unmangle_name(name1, sourcemap, mangler);
-                    unmangle_name(name2, sourcemap, mangler);
+                    unmangle_name(name1, source_map, mangler);
+                    unmangle_name(name2, source_map, mangler);
                 }
             },
             Error::ResolveError(_) => {}
@@ -502,13 +502,13 @@ impl Diagnostic<Error> {
                 UsageError::NotFound(_, _) => todo!(),
                 UsageError::Visibility { orig, decl, .. } => {
                     if let Some((_, id)) = orig {
-                        unmangle_id(id, sourcemap, mangler);
+                        unmangle_id(id, source_map, mangler);
                     }
-                    unmangle_id(&mut decl.1, sourcemap, mangler);
+                    unmangle_id(&mut decl.1, source_map, mangler);
                 }
             },
             Error::CondCompError(e) => match e {
-                CondCompError::InvalidExpression(expr) => unmangle_expr(expr, sourcemap, mangler),
+                CondCompError::InvalidExpression(expr) => unmangle_expr(expr, source_map, mangler),
                 CondCompError::InvalidFeatureFlag(_)
                 | CondCompError::UnexpectedFeatureFlag(_)
                 | CondCompError::NoPrecedingIf
@@ -519,100 +519,100 @@ impl Diagnostic<Error> {
             // Error::GenericsError(_) => {}
             #[cfg(feature = "eval")]
             Error::EvalError(e) => match e {
-                EvalError::NotScalar(ty) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::NotConstructible(ty) => unmangle_ty(ty, sourcemap, mangler),
+                EvalError::NotScalar(ty) => unmangle_ty(ty, source_map, mangler),
+                EvalError::NotConstructible(ty) => unmangle_ty(ty, source_map, mangler),
                 EvalError::Type(ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
                 EvalError::SampledType(ty) => {
-                    unmangle_ty(ty, sourcemap, mangler);
+                    unmangle_ty(ty, source_map, mangler);
                 }
-                EvalError::NotType(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::UnknownType(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::UnknownStruct(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::NotAccessible(name, _) => unmangle_name(name, sourcemap, mangler),
-                EvalError::UnexpectedTemplate(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::View(ty, _) => unmangle_ty(ty, sourcemap, mangler),
+                EvalError::NotType(name) => unmangle_name(name, source_map, mangler),
+                EvalError::UnknownType(name) => unmangle_name(name, source_map, mangler),
+                EvalError::UnknownStruct(name) => unmangle_name(name, source_map, mangler),
+                EvalError::NotAccessible(name, _) => unmangle_name(name, source_map, mangler),
+                EvalError::UnexpectedTemplate(name) => unmangle_name(name, source_map, mangler),
+                EvalError::View(ty, _) => unmangle_ty(ty, source_map, mangler),
                 EvalError::RefType(ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
                 EvalError::WriteRefType(ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
                 EvalError::Conversion(ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
-                EvalError::ConvOverflow(_, ty) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::Component(ty, _) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::Index(ty) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::NotIndexable(ty) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::OutOfBounds(_, ty, _) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::Unary(_, ty) => unmangle_ty(ty, sourcemap, mangler),
+                EvalError::ConvOverflow(_, ty) => unmangle_ty(ty, source_map, mangler),
+                EvalError::Component(ty, _) => unmangle_ty(ty, source_map, mangler),
+                EvalError::Index(ty) => unmangle_ty(ty, source_map, mangler),
+                EvalError::NotIndexable(ty) => unmangle_ty(ty, source_map, mangler),
+                EvalError::OutOfBounds(_, ty, _) => unmangle_ty(ty, source_map, mangler),
+                EvalError::Unary(_, ty) => unmangle_ty(ty, source_map, mangler),
                 EvalError::Binary(_, ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
                 EvalError::CompwiseBinary(ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
-                EvalError::UnknownFunction(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::NotCallable(name) => unmangle_name(name, sourcemap, mangler),
+                EvalError::UnknownFunction(name) => unmangle_name(name, source_map, mangler),
+                EvalError::NotCallable(name) => unmangle_name(name, source_map, mangler),
                 EvalError::Signature(sig) => {
-                    unmangle_name(&mut sig.name, sourcemap, mangler);
+                    unmangle_name(&mut sig.name, source_map, mangler);
                     for tplt in sig.tplt.iter_mut().flatten() {
                         match tplt {
                             wgsl_types::tplt::TpltParam::Type(ty) => {
-                                unmangle_ty(ty, sourcemap, mangler)
+                                unmangle_ty(ty, source_map, mangler)
                             }
                             wgsl_types::tplt::TpltParam::Instance(inst) => {
-                                unmangle_inst(inst, sourcemap, mangler)
+                                unmangle_inst(inst, source_map, mangler)
                             }
                             wgsl_types::tplt::TpltParam::Enumerant(_) => {}
                         }
                     }
                     for arg in &mut sig.args {
-                        unmangle_ty(arg, sourcemap, mangler);
+                        unmangle_ty(arg, source_map, mangler);
                     }
                 }
-                EvalError::ParamCount(name, _, _) => unmangle_name(name, sourcemap, mangler),
+                EvalError::ParamCount(name, _, _) => unmangle_name(name, source_map, mangler),
                 EvalError::ParamType(ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
                 EvalError::ReturnType(ty1, name, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_name(name, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_name(name, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
                 EvalError::NoReturn(name, ty) => {
-                    unmangle_name(name, sourcemap, mangler);
-                    unmangle_ty(ty, sourcemap, mangler);
+                    unmangle_name(name, source_map, mangler);
+                    unmangle_ty(ty, source_map, mangler);
                 }
                 EvalError::UnexpectedReturn(name, ty) => {
-                    unmangle_name(name, sourcemap, mangler);
-                    unmangle_ty(ty, sourcemap, mangler);
+                    unmangle_name(name, source_map, mangler);
+                    unmangle_ty(ty, source_map, mangler);
                 }
-                EvalError::NotConst(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::Void(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::MustUse(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::NotEntrypoint(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::UnknownDecl(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::UninitConst(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::UninitLet(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::UninitOverride(name) => unmangle_name(name, sourcemap, mangler),
-                EvalError::DuplicateDecl(name) => unmangle_name(name, sourcemap, mangler),
+                EvalError::NotConst(name) => unmangle_name(name, source_map, mangler),
+                EvalError::Void(name) => unmangle_name(name, source_map, mangler),
+                EvalError::MustUse(name) => unmangle_name(name, source_map, mangler),
+                EvalError::NotEntrypoint(name) => unmangle_name(name, source_map, mangler),
+                EvalError::UnknownDecl(name) => unmangle_name(name, source_map, mangler),
+                EvalError::UninitConst(name) => unmangle_name(name, source_map, mangler),
+                EvalError::UninitLet(name) => unmangle_name(name, source_map, mangler),
+                EvalError::UninitOverride(name) => unmangle_name(name, source_map, mangler),
+                EvalError::DuplicateDecl(name) => unmangle_name(name, source_map, mangler),
                 EvalError::AssignType(ty1, ty2) => {
-                    unmangle_ty(ty1, sourcemap, mangler);
-                    unmangle_ty(ty2, sourcemap, mangler);
+                    unmangle_ty(ty1, source_map, mangler);
+                    unmangle_ty(ty2, source_map, mangler);
                 }
-                EvalError::IncrType(ty) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::DecrType(ty) => unmangle_ty(ty, sourcemap, mangler),
-                EvalError::ConstAssertFailure(expr) => unmangle_expr(expr, sourcemap, mangler),
+                EvalError::IncrType(ty) => unmangle_ty(ty, source_map, mangler),
+                EvalError::DecrType(ty) => unmangle_ty(ty, source_map, mangler),
+                EvalError::ConstAssertFailure(expr) => unmangle_expr(expr, source_map, mangler),
                 EvalError::Todo(_)
                 | EvalError::Unreachable
                 | EvalError::MissingTemplate(_)

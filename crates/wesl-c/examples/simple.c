@@ -45,7 +45,7 @@ int main() {
     // setup compile options
     WeslCompileOptions options = {
         .mangler = WESL_MANGLER_NONE,
-        .sourcemap = true,
+        .source_map = true,
         .imports = true,
         .condcomp = true,
         .generics = true,

@@ -67,7 +67,7 @@ pub struct CompileOptions {
     pub main: String,
     #[serde(default)]
     pub mangler: ManglerKind,
-    pub sourcemap: bool,
+    pub source_map: bool,
     pub imports: bool,
     pub condcomp: bool,
     pub visibility: bool,
@@ -210,7 +210,7 @@ fn run_compile(args: CompileOptions) -> Result<CompileResult, wesl::Error> {
         strip: args.strip,
         lower: args.lower,
         validate: args.validate,
-        sourcemap: args.sourcemap,
+        source_map: args.source_map,
         sort_declarations: false,
         mangler: args.mangler.into(),
         mangle_main: args.mangle_main,

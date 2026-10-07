@@ -103,8 +103,8 @@ impl<T: SourceMap> SourceMap for Option<T> {
 
 /// This [`SourceMap`] implementation simply does nothing and returns `None`.
 ///
-/// It can be useful to pass this struct to functions requiring a sourcemap, but
-/// you don't care about sourcemapping.
+/// It can be useful to pass this struct to functions requiring a source map, but
+/// you don't care about source mapping.
 pub struct NoSourceMap;
 
 impl SourceMap for NoSourceMap {
@@ -132,7 +132,7 @@ pub struct SourceMapper<'a> {
     pub main_path: ModulePath,
     pub resolver: &'a dyn Resolver,
     pub mangler: &'a dyn Mangler,
-    pub sourcemap: RefCell<BasicSourceMap>,
+    pub source_map: RefCell<BasicSourceMap>,
 }
 
 impl<'a> SourceMapper<'a> {
@@ -146,24 +146,24 @@ impl<'a> SourceMapper<'a> {
             main_path,
             resolver,
             mangler,
-            sourcemap: Default::default(),
+            source_map: Default::default(),
         }
     }
     /// Consume this and return a [`BasicSourceMap`].
     pub fn finish(self) -> BasicSourceMap {
-        let mut sourcemap = self.sourcemap.into_inner();
-        if let Some(file) = sourcemap.file(&self.main_path) {
-            sourcemap.set_default_source(file.source.to_string());
+        let mut source_map = self.source_map.into_inner();
+        if let Some(file) = source_map.file(&self.main_path) {
+            source_map.set_default_source(file.source.to_string());
         }
-        sourcemap
+        source_map
     }
 }
 
 impl<'a> Resolver for SourceMapper<'a> {
     fn resolve_source(&self, path: &ModulePath) -> Result<std::borrow::Cow<'a, str>, ResolveError> {
         let res = self.resolver.resolve_source(path)?;
-        let mut sourcemap = self.sourcemap.borrow_mut();
-        sourcemap.add_file(
+        let mut source_map = self.source_map.borrow_mut();
+        source_map.add_file(
             path.clone(),
             SourceMapFile {
                 source: res.clone().into(),
@@ -187,13 +187,13 @@ impl<'a> Resolver for SourceMapper<'a> {
 impl<'a> Mangler for SourceMapper<'a> {
     fn mangle(&self, path: &ModulePath, item: &str) -> String {
         let res = self.mangler.mangle(path, item);
-        let mut sourcemap = self.sourcemap.borrow_mut();
+        let mut source_map = self.source_map.borrow_mut();
         let entry = SourceMapEntry {
             path: path.clone(),
             name: item.to_string(),
             span: None,
         };
-        sourcemap.add_item(res.clone(), entry);
+        source_map.add_item(res.clone(), entry);
         res
     }
     fn unmangle(&self, mangled: &str) -> Option<(ModulePath, String)> {
