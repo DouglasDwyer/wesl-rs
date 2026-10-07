@@ -14,6 +14,38 @@ pub enum DeclarationScope {
     Function,
 }
 
+/// Rejects wildcards without a module path and wildcards in a `public import`.
+pub fn validate_import(
+    visibility: Visibility,
+    path: Option<&ModulePath>,
+    content: &ImportContent,
+) -> Result<(), ParseError> {
+    /// Whether a wildcard appears anywhere in `content`, and whether one has no module path.
+    fn scan(content: &ImportContent, has_path: bool) -> (bool, bool) {
+        match content {
+            ImportContent::Item(_) => (false, false),
+            ImportContent::Wildcard => (true, !has_path),
+            ImportContent::Collection(coll) => coll.iter().fold((false, false), |acc, import| {
+                let (any, bare) = scan(&import.content, has_path || !import.path.is_empty());
+                (acc.0 || any, acc.1 || bare)
+            }),
+        }
+    }
+
+    let (any, bare) = scan(content, path.is_some());
+    if bare {
+        Err(ParseError::InvalidImport(
+            "a wildcard must follow a module path",
+        ))
+    } else if any && visibility == Visibility::Public {
+        Err(ParseError::InvalidImport(
+            "`public import` with a wildcard is reserved",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub fn validate_declaration(decl: &Declaration, scope: DeclarationScope) -> Result<(), ParseError> {
     // check for required initializers
     if matches!(decl.kind, DeclarationKind::Const | DeclarationKind::Let)

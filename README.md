@@ -55,6 +55,7 @@ Try out WESL and its implementations, `wesl-js` and `wesl-rs` on the [playground
 **WESL 0.2** was released and supports the following features:
 
 * [x] Import statements & inline import paths
+* [x] Wildcard imports (`import path::*;`) with `@!wildcardable` modules
 * [x] Conditional compilation with `@if`, `@elif`, `@else` attributes
 * [x] Cargo shader packages
 

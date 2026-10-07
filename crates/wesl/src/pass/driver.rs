@@ -3,14 +3,16 @@ use std::collections::HashSet;
 use wgsl_parse::syntax::{Ident, ModulePath, TranslationUnit, Visibility};
 
 use crate::{
-    error::Error,
-    pass::{self, Module, UsedItems},
+    error::{Error, Warning},
+    pass::{self, LoadedModules, Module, UsedItems},
 };
 
 pub struct CompileResult {
     pub syntax: TranslationUnit,
     pub modules: Vec<Module>,
     pub used_items: UsedItems,
+    /// Non-fatal diagnostics emitted during compilation.
+    pub warnings: Vec<Warning>,
 }
 
 /// Re-implementing this trait gives full control over the steps of the compilation pipeline.
@@ -23,7 +25,8 @@ pub struct CompileResult {
 ///    they are the basis of static usage analysis.
 /// 3. Run static usage analysis: for each entry point, collect the list of declarations it depends on, transitively.
 ///    Usage analysis returns the set of imported identifiers (defined in other modules).
-/// 4. Load missing imported modules found via usage analysis.
+/// 4. Load missing imported modules found via usage analysis. Modules with wildcard imports
+///    also load the imported modules to read their items (see [`Self::resolve_wildcards`]).
 /// 5. Run the previous two steps with imported modules/identifiers, until all identifiers have been usage-analyzed.
 /// 6. Assemble loaded modules into a final module.
 ///
@@ -87,6 +90,21 @@ pub trait CompilerDriver: Sized {
     ) -> Result<(), Error> {
         pass::usage_analysis(module, decl_name, min_vis, already_used, to_analyze, false)?;
         Ok(())
+    }
+
+    /// Bind the references that a freshly loaded module takes from its wildcard imports.
+    ///
+    /// All the modules that `module` wildcard imports are in `loaded`. This also reports the
+    /// diagnostics related to wildcards. See [`pass::resolve_wildcards`].
+    fn resolve_wildcards(
+        &self,
+        module: &mut Module,
+        loaded: &LoadedModules,
+    ) -> Result<Vec<Warning>, Error> {
+        let mut warnings =
+            pass::resolve_wildcards(module, loaded, |path| self.canonical_path(path), false)?;
+        warnings.extend(pass::builtin_shadow_warnings(module));
+        Ok(warnings)
     }
 
     /// Get the [`TranslationUnit`] for a module at a given path.

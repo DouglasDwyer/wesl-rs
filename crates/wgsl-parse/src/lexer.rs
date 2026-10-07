@@ -297,6 +297,8 @@ pub enum Token {
     SymArrow,
     #[token("@")]
     SymAttr,
+    #[token("@!")]
+    SymModuleAttr,
     #[token("/")]
     SymForwardSlash,
     #[token("!")]
@@ -529,6 +531,7 @@ impl Token {
                 | Token::SymAndAnd
                 | Token::SymArrow
                 | Token::SymAttr
+                | Token::SymModuleAttr
                 | Token::SymForwardSlash
                 | Token::SymBang
                 | Token::SymBracketLeft
@@ -643,6 +646,7 @@ impl Display for Token {
             Token::SymAndAnd => f.write_str("&&"),
             Token::SymArrow => f.write_str("->"),
             Token::SymAttr => f.write_str("@"),
+            Token::SymModuleAttr => f.write_str("@!"),
             Token::SymForwardSlash => f.write_str("/"),
             Token::SymBang => f.write_str("!"),
             Token::SymBracketLeft => f.write_str("["),

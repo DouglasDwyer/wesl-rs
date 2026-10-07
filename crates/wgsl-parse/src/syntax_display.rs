@@ -126,6 +126,7 @@ impl Display for ImportContent {
                 let coll = coll.iter().format(", ");
                 write!(f, "{{ {coll} }}")
             }
+            ImportContent::Wildcard => f.write_str("*"),
         }
     }
 }
@@ -136,7 +137,19 @@ impl Display for GlobalDirective {
             GlobalDirective::Diagnostic(print) => write!(f, "{print}"),
             GlobalDirective::Enable(print) => write!(f, "{print}"),
             GlobalDirective::Requires(print) => write!(f, "{print}"),
+            GlobalDirective::ModuleAttribute(print) => write!(f, "{print}"),
         }
+    }
+}
+
+impl Display for ModuleAttributeDirective {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
+        let name = &self.name;
+        let args = self.arguments.iter().format_with("", |args, f| {
+            f(&format_args!("({})", args.iter().format(", ")))
+        });
+        write!(f, "@!{name}{args};")
     }
 }
 

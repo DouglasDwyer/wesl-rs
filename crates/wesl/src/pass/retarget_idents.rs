@@ -5,8 +5,9 @@ use std::{
 
 use crate::{
     Resolver, SyntaxUtil,
+    error::UsageError,
     idents::builtin_ident,
-    pass::{Imports, Module, UsedItems, Visit, imported_item_path},
+    pass::{ImportedItem, Imports, Module, UsedItems, Visit, imported_item_path},
 };
 use wesl_macros::query_mut;
 
@@ -47,11 +48,13 @@ impl ScopeInner {
 }
 
 impl Scope {
-    fn new() -> Scope {
+    /// Scope whose bindings are the outermost layer, shadowed by any inner declaration.
+    fn with_outer(outer: &HashMap<String, Ident>) -> Scope {
         Scope(Rc::new(ScopeInner {
-            local: HashMap::new(),
+            local: outer.clone(),
             parent: None,
         }))
+        .push()
     }
 
     fn push(&self) -> Scope {
@@ -88,6 +91,14 @@ impl Scope {
 /// Same-scope declarations with the same name will have the same identifier.
 /// Note: this can be valid code only with `@if` conditional declarations.
 pub fn retarget_idents(module: &mut TranslationUnit) {
+    retarget_idents_with(module, &HashMap::new());
+}
+
+/// Variant of [`retarget_idents`] with extra bindings for names not declared in the module.
+///
+/// Module declarations, imports and local declarations take precedence over `outer`, which
+/// in turn takes precedence over built-in names. This is how wildcard imports are bound.
+pub fn retarget_idents_with(module: &mut TranslationUnit, outer: &HashMap<String, Ident>) {
     fn flatten_imports(imports: &mut [ImportStatement]) -> impl Iterator<Item = &mut Ident> + '_ {
         fn rec(content: &mut ImportContent) -> impl Iterator<Item = &mut Ident> + '_ {
             match content {
@@ -98,6 +109,7 @@ pub fn retarget_idents(module: &mut TranslationUnit) {
                     .iter_mut()
                     .flat_map(|import| rec(&mut import.content))
                     .boxed(),
+                ImportContent::Wildcard => std::iter::empty().boxed(),
             }
         }
         imports
@@ -315,7 +327,7 @@ pub fn retarget_idents(module: &mut TranslationUnit) {
         scope
     }
 
-    let mut scope = Scope::new();
+    let mut scope = Scope::with_outer(outer);
 
     for ident in flatten_imports(&mut module.imports) {
         scope.insert(ident);
@@ -401,99 +413,162 @@ pub fn retarget_idents(module: &mut TranslationUnit) {
 /// We call this after usage analysis, because it is mutating the modules, and we want to keep
 /// mutations and lookups separate if possible, to avoid multiple mut borrows.
 ///
+/// Returns [`UsageError::AmbiguousWildcard`] if a reference could be one of several different
+/// declarations provided by wildcard imports.
+///
 /// # Panics
 ///
 /// * if an identifier has no corresponding declaration.
-pub fn retarget_modules(modules: &mut [Module], used_items: &UsedItems, resolver: &impl Resolver) {
+pub fn retarget_modules(
+    modules: &mut [Module],
+    used_items: &UsedItems,
+    resolver: &impl Resolver,
+) -> Result<(), UsageError> {
     // unfortunately I have to pass 3 module_xxx by ref here because I can't mutably borrow `ty` and immutably borrow a `Module`.
     // TODO: could we get away with using just used_items instead of other_modules?
     // in theory it contains all used identifiers, and we wouldn't have to deal with the double borrow
     // shenanigans. The only concern is re-exports, they would need to be retargeted.
-    fn retarget_ty<'a>(
-        ty: &mut TypeExpression,
-        module_path: &ModulePath,
-        module_imports: &Imports,
-        module_idents: &HashMap<Ident, Visibility>,
+
+    /// The parts of a module that are read while its syntax is being mutated.
+    #[derive(Clone, Copy)]
+    struct ModuleView<'a> {
+        /// Path of the module.
+        path: &'a ModulePath,
+        /// Named imports of the module.
+        imports: &'a Imports,
+        /// Items provided by the wildcard imports of the module.
+        wildcards: &'a HashMap<Ident, Vec<ImportedItem>>,
+        /// Used declarations of the module.
+        idents: &'a HashMap<Ident, Visibility>,
+    }
+
+    /// Find the declaration ident of the item `import_ident` in the module `import_path`,
+    /// following re-exports.
+    fn resolve_item<'a>(
+        mut import_path: ModulePath,
+        mut import_ident: Ident,
+        module: ModuleView,
         other_modules: impl IntoIterator<Item = &'a Module> + Clone + 'a,
         resolver: &impl Resolver,
+    ) -> Option<Ident> {
+        // because of re-exports, we may have to look up the import module in a loop.
+        // TODO: check that there can't be re-export cycles: A exports foo from B, B exports foo from A...
+        loop {
+            // if the import path points to a local decl.
+            // this is a special case but does the same as the code below, because the current
+            // module is not stored in `other_modules`.
+            if import_path == *module.path {
+                if let Some(ident) = module
+                    .idents
+                    .keys()
+                    .find(|ident| *ident.name() == *import_ident.name())
+                    .cloned()
+                {
+                    // we found a declaration with the right name.
+                    return Some(ident);
+                } else if let Some((_, item)) = module
+                    .imports
+                    .iter()
+                    .find(|(ident, _)| *ident.name() == *import_ident.name())
+                {
+                    // there is no declaration with this name, but there is a re-export.
+                    // we loop again with a new path and ident to look up.
+                    import_path = resolver.canonical_path(&item.path);
+                    import_ident = item.ident.clone();
+                } else {
+                    debug_assert!(false, "no declaration {import_ident} in {import_path}");
+                    return None;
+                }
+            } else {
+                let Some(import_module) = other_modules
+                    .clone()
+                    .into_iter()
+                    .find(|m| m.path == import_path)
+                else {
+                    debug_assert!(false, "no importable module {import_path}");
+                    return None;
+                };
+                if let Some(ident) = import_module.syntax.decl_ident(&import_ident.name()) {
+                    // we found a declaration with the right name.
+                    return Some(ident);
+                } else if let Some((_, item)) = import_module
+                    .imports
+                    .iter()
+                    .find(|(ident, _)| *ident.name() == *import_ident.name())
+                {
+                    // there is no declaration with this name, but there is a re-export.
+                    // we loop again with a new path and ident to look up.
+                    import_path = resolver.canonical_path(&item.path);
+                    import_ident = item.ident.clone();
+                } else {
+                    debug_assert!(false, "no declaration {import_ident} in {import_path}");
+                    return None;
+                }
+            }
+        }
+    }
+
+    fn retarget_ty<'a>(
+        ty: &mut TypeExpression,
+        module: ModuleView,
+        other_modules: impl IntoIterator<Item = &'a Module> + Clone + 'a,
+        resolver: &impl Resolver,
+        res: &mut Result<(), UsageError>,
     ) {
         // first the recursive call
         for ty in Visit::<TypeExpression>::visit_mut(ty) {
-            retarget_ty(
-                ty,
-                module_path,
-                module_imports,
-                module_idents,
-                other_modules.clone(),
-                resolver,
-            );
+            retarget_ty(ty, module, other_modules.clone(), resolver, res);
         }
 
-        if let Some((import_path, mut import_ident)) =
-            imported_item_path(ty, module_path, module_imports)
+        if let Some((import_path, import_ident)) =
+            imported_item_path(ty, module.path, module.imports)
         {
-            let mut import_path = resolver.canonical_path(&import_path);
-            // because of re-exports, we may have to look up the import module in a loop.
-            // TODO: check that there can't be re-export cycles: A exports foo from B, B exports foo from A...
-            loop {
-                // if the import path points to a local decl.
-                // this is a special case but does the same as the code below, because the current
-                // module is not stored in `other_modules`.
-                if import_path == *module_path {
-                    if let Some(ident) = module_idents
-                        .keys()
-                        .find(|ident| *ident.name() == *import_ident.name())
-                        .cloned()
-                    {
-                        // we found a declaration with the right name.
-                        ty.path = None;
-                        ty.ident = ident;
-                        return;
-                    } else if let Some((_, item)) = module_imports
-                        .iter()
-                        .find(|(ident, _)| *ident.name() == *ty.ident.name())
-                    {
-                        // there is no declaration with this name, but there is a re-export.
-                        // we loop again with a new path and ident to look up.
-                        // TODO: check that there can't be re-export cycles: A exports foo from B, B exports foo from A...
-                        import_path = resolver.canonical_path(&item.path);
-                        import_ident = item.ident.clone();
-                    } else {
-                        debug_assert!(false, "no declaration {import_ident} in {import_path}");
-                        return;
-                    }
-                } else {
-                    let Some(import_module) = other_modules
-                        .clone()
-                        .into_iter()
-                        .find(|m| m.path == import_path)
-                    else {
-                        debug_assert!(false, "no importable module {import_path}");
-                        return;
-                    };
-                    if let Some(ident) = import_module.syntax.decl_ident(&import_ident.name()) {
-                        // we found a declaration with the right name.
-                        ty.path = None;
-                        ty.ident = ident;
-                        return;
-                    } else if let Some((_, item)) = import_module
-                        .imports
-                        .iter()
-                        .find(|(ident, _)| *ident.name() == *import_ident.name())
-                    {
-                        // there is no declaration with this name, but there is a re-export.
-                        // we loop again with a new path and ident to look up.
-                        // TODO: check that there can't be re-export cycles: A exports foo from B, B exports foo from A...
-                        import_path = resolver.canonical_path(&item.path);
-                        import_ident = item.ident.clone();
-                    } else {
-                        debug_assert!(false, "no declaration {import_ident} in {import_path}");
-                        return;
+            let import_path = resolver.canonical_path(&import_path);
+            if let Some(ident) =
+                resolve_item(import_path, import_ident, module, other_modules, resolver)
+            {
+                ty.path = None;
+                ty.ident = ident;
+            }
+        } else if let Some(bound) = module
+            .wildcards
+            .get(&ty.ident)
+            .filter(|_| ty.path.is_none())
+        {
+            let mut resolved: Vec<(Ident, ModulePath)> = Vec::new();
+            for item in bound {
+                let import_path = resolver.canonical_path(&item.path);
+                let ident = resolve_item(
+                    import_path,
+                    item.ident.clone(),
+                    module,
+                    other_modules.clone(),
+                    resolver,
+                );
+                if let Some(ident) = ident
+                    && !resolved.iter().any(|(other, _)| *other == ident)
+                {
+                    resolved.push((ident, item.path.clone()));
+                }
+            }
+            match resolved.len() {
+                0 => {}
+                1 => {
+                    ty.ident = resolved.swap_remove(0).0;
+                }
+                _ => {
+                    if res.is_ok() {
+                        *res = Err(UsageError::AmbiguousWildcard {
+                            name: ty.ident.to_string(),
+                            candidates: resolved.into_iter().map(|(_, path)| path).collect(),
+                        });
                     }
                 }
             }
         }
     }
+
+    let mut res = Ok(());
 
     for i in 0..modules.len() {
         // shenanigans to get both a mutable reference to the current module,
@@ -508,6 +583,13 @@ pub fn retarget_modules(modules: &mut [Module], used_items: &UsedItems, resolver
             continue;
         };
 
+        let view = ModuleView {
+            path: &module.path,
+            imports: &module.imports,
+            wildcards: &module.wildcard_bindings,
+            idents: module_used_items,
+        };
+
         for decl in &mut module.syntax.global_declarations {
             // we only retarget used declarations. Other declarations are not checked.
             if let Some(ident) = decl.ident()
@@ -517,17 +599,12 @@ pub fn retarget_modules(modules: &mut [Module], used_items: &UsedItems, resolver
             }
 
             for ty in Visit::<TypeExpression>::visit_mut(decl.node_mut()) {
-                retarget_ty(
-                    ty,
-                    &module.path,
-                    &module.imports,
-                    module_used_items,
-                    other_modules.clone(),
-                    resolver,
-                );
+                retarget_ty(ty, view, other_modules.clone(), resolver, &mut res);
             }
         }
     }
+
+    res
 }
 
 /// Check that retarget_ident handles shadowing correctly.

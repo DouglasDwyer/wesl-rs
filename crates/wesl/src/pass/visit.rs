@@ -429,6 +429,7 @@ impl_visit! { TranslationUnit => Attributes,
             GlobalDirective::Diagnostic.attributes,
             GlobalDirective::Enable.attributes,
             GlobalDirective::Requires.attributes,
+            GlobalDirective::ModuleAttribute.attributes,
         },
         global_declarations.[].(x => visit::<GlobalDeclaration, Attributes>(x)),
     }

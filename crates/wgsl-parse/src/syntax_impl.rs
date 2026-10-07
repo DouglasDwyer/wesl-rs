@@ -735,8 +735,13 @@ impl SyntaxNode for GlobalDirective {
     impl_attrs_enum! {
         GlobalDirective::Diagnostic,
         GlobalDirective::Enable,
-        GlobalDirective::Requires
+        GlobalDirective::Requires,
+        GlobalDirective::ModuleAttribute
     }
+}
+
+impl SyntaxNode for ModuleAttributeDirective {
+    impl_attrs_struct! {}
 }
 
 impl SyntaxNode for DiagnosticDirective {

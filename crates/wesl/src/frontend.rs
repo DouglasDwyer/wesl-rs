@@ -15,9 +15,9 @@ use wgsl_parse::{
 
 use crate::{
     SyntaxUtil,
-    error::{Diagnostic, Error, ResolveError, UsageError},
+    error::{Diagnostic, Error, ResolveError, UsageError, Warning},
     mangler::{self, Mangler},
-    pass::{self, CompilerDriver, Features, Module, UsedItems},
+    pass::{self, CompilerDriver, Features, LoadedModules, Module, UsedItems},
     resolver::{Constants, Resolver, StandardResolver},
     sourcemap::{BasicSourceMap, SourceMapper},
 };
@@ -235,6 +235,7 @@ pub fn compile(
             modules: res.modules,
             sourcemap: Some(sourcemap),
             used_items: res.used_items,
+            warnings: res.warnings,
         })
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
@@ -244,6 +245,7 @@ pub fn compile(
             modules: res.modules,
             sourcemap: None,
             used_items: res.used_items,
+            warnings: res.warnings,
         })
     }
 }
@@ -268,6 +270,7 @@ pub async fn compile_async(
             modules: res.modules,
             sourcemap: Some(sourcemap),
             used_items: res.used_items,
+            warnings: res.warnings,
         })
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
@@ -277,6 +280,7 @@ pub async fn compile_async(
             modules: res.modules,
             sourcemap: None,
             used_items: res.used_items,
+            warnings: res.warnings,
         })
     }
 }
@@ -463,7 +467,11 @@ pub struct CompileResult {
     pub syntax: TranslationUnit,
     pub modules: Vec<Module>,
     pub sourcemap: Option<BasicSourceMap>,
+    /// Declarations used in each module. Modules that were only read for their wildcard
+    /// imported items are listed without any declaration.
     pub used_items: UsedItems,
+    /// Non-fatal diagnostics emitted during compilation, e.g. `wildcard_shadow`.
+    pub warnings: Vec<Warning>,
 }
 
 impl CompileResult {
@@ -645,11 +653,31 @@ impl CompilerDriver for CompilationPass<'_> {
 
         pass::retarget_idents(&mut module);
 
-        if self.options.validate {
+        if self.options.validate && !pass::has_wildcards(&module) {
             pass::validate_wesl(&module)?;
         }
 
         Ok(module)
+    }
+
+    fn resolve_wildcards(
+        &self,
+        module: &mut Module,
+        loaded: &LoadedModules,
+    ) -> Result<Vec<Warning>, Error> {
+        let mut warnings = pass::resolve_wildcards(
+            module,
+            loaded,
+            |path| self.canonical_path(path),
+            !self.options.visibility,
+        )?;
+        warnings.extend(pass::builtin_shadow_warnings(module));
+
+        if self.options.validate && !module.wildcards.is_empty() {
+            pass::validate_wesl(&module.syntax)?;
+        }
+
+        Ok(warnings)
     }
 
     fn link(
@@ -657,7 +685,7 @@ impl CompilerDriver for CompilationPass<'_> {
         modules: &mut Vec<Module>,
         used_items: &UsedItems,
     ) -> Result<TranslationUnit, Error> {
-        pass::retarget_modules(modules, used_items, &self.resolver);
+        pass::retarget_modules(modules, used_items, &self.resolver)?;
 
         for module in modules.iter_mut() {
             if !self.options.mangle_main && module.path == *self.main_path {

@@ -3,7 +3,7 @@ use wgsl_parse::{SyntaxNode, syntax::*};
 
 use crate::{
     error::UsageError,
-    pass::{Imports, Visit, flatten_imports, imported_item_path},
+    pass::{ImportedItem, Imports, Visit, WildcardImport, import::flatten_all, imported_item_path},
 };
 
 #[derive(Clone)]
@@ -11,16 +11,43 @@ pub struct Module {
     pub syntax: TranslationUnit,
     pub path: ModulePath,
     pub imports: Imports,
+    /// Wildcard imports (`import path::*;`) of the module.
+    pub wildcards: Vec<WildcardImport>,
+    /// Items that wildcard imports may provide, keyed by the ident that references to them
+    /// are bound to. Filled by [`crate::pass::resolve_wildcards`].
+    pub wildcard_bindings: HashMap<Ident, Vec<ImportedItem>>,
 }
 
 impl Module {
     pub fn new(path: ModulePath, syntax: TranslationUnit) -> Self {
-        let imports = flatten_imports(&syntax.imports, &path);
+        let (imports, wildcards) = flatten_all(&syntax.imports, &path);
         Self {
             syntax,
             path,
             imports,
+            wildcards,
+            wildcard_bindings: HashMap::new(),
         }
+    }
+
+    /// Items an unqualified reference may resolve to through wildcard imports.
+    pub fn wildcard_items(&self, ty_expr: &TypeExpression) -> &[ImportedItem] {
+        if ty_expr.path.is_some() {
+            return &[];
+        }
+        self.wildcard_bindings
+            .get(&ty_expr.ident)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+}
+
+/// Minimum visibility an item in `item_path` needs to be used from the module at `module_path`.
+pub(crate) fn required_visibility(module_path: &ModulePath, item_path: &ModulePath) -> Visibility {
+    if module_path.origin == item_path.origin {
+        Visibility::Package
+    } else {
+        Visibility::Public
     }
 }
 
@@ -242,27 +269,29 @@ fn decl_usage_analysis(
     let mut res = Ok(());
 
     Visit::<TypeExpression>::visit_rec(decl, &mut |ty_expr| {
+        let imported: Vec<_> = match imported_item_path(ty_expr, &module.path, &module.imports) {
+            Some(item) => vec![item],
+            None => module
+                .wildcard_items(ty_expr)
+                .iter()
+                .map(|item| (item.path.clone(), item.ident.clone()))
+                .collect(),
+        };
+
         // if this ident refers an imported item, we add it to the list of used items.
-        if let Some((import_path, import_ident)) =
-            imported_item_path(ty_expr, &module.path, &module.imports)
-        {
-            let min_vis = match import_path.origin {
-                PathOrigin::Absolute | PathOrigin::Relative(_) => Visibility::Package,
-                PathOrigin::Package(_) => Visibility::Public,
-            };
-            if let Some((decl_ident, decl_vis)) =
-                already_used.get_name(&import_path, &ty_expr.ident.name())
-            {
-                if !ignore_visibility && decl_vis < min_vis {
-                    res = Err(UsageError::Visibility {
-                        orig: decl.ident().map(|ident| (module.path.clone(), ident)),
-                        decl: (import_path, decl_ident),
-                        min_vis,
-                        decl_vis,
-                    });
+        if !imported.is_empty() {
+            for (import_path, import_ident) in imported {
+                if let Err(err) = import_usage_analysis(
+                    module,
+                    decl,
+                    import_path,
+                    import_ident,
+                    already_used,
+                    to_analyze,
+                    ignore_visibility,
+                ) {
+                    res = Err(err);
                 }
-            } else {
-                to_analyze.insert_ident(import_path, import_ident, min_vis);
             }
         }
         // this ident refers a local declaration, we analyze it recursively.
@@ -285,6 +314,33 @@ fn decl_usage_analysis(
     });
 
     res
+}
+
+/// Record that `decl` uses the item `import_ident` of the module `import_path`.
+fn import_usage_analysis(
+    module: &Module,
+    decl: &GlobalDeclaration,
+    import_path: ModulePath,
+    import_ident: Ident,
+    already_used: &mut UsedItems,
+    to_analyze: &mut UsedItems,
+    ignore_visibility: bool,
+) -> Result<(), UsageError> {
+    let min_vis = required_visibility(&module.path, &import_path);
+    if let Some((decl_ident, decl_vis)) = already_used.get_name(&import_path, &import_ident.name())
+    {
+        if !ignore_visibility && decl_vis < min_vis {
+            return Err(UsageError::Visibility {
+                orig: decl.ident().map(|ident| (module.path.clone(), ident)),
+                decl: (import_path, decl_ident),
+                min_vis,
+                decl_vis,
+            });
+        }
+    } else {
+        to_analyze.insert_ident(import_path, import_ident, min_vis);
+    }
+    Ok(())
 }
 
 #[test]

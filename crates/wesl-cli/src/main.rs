@@ -448,6 +448,12 @@ enum FileOrSource {
     Source(String),
 }
 
+fn print_warnings(res: &CompileResult) {
+    for warning in &res.warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+
 fn run_compile(
     options: &CompOptsArgs,
     file_or_source: FileOrSource,
@@ -471,6 +477,7 @@ fn run_compile(
             let resolver = StandardResolver::new(base);
 
             let res = compiler.with_resolver(resolver).compile_module(&path)?;
+            print_warnings(&res);
             Ok(res)
         }
         FileOrSource::Source(source) => {
@@ -484,6 +491,7 @@ fn run_compile(
             router.mount_fallback_resolver(StandardResolver::new(base));
 
             let res = compiler.with_resolver(router).compile_module(&path)?;
+            print_warnings(&res);
             Ok(res)
         }
     }

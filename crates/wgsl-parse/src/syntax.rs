@@ -154,6 +154,8 @@ pub struct Import {
 pub enum ImportContent {
     Item(ImportItem),
     Collection(Vec<Import>),
+    /// `*`: every top-level item visible to the importer in the module named by the path before it.
+    Wildcard,
 }
 
 /// WESL imports extension
@@ -172,6 +174,21 @@ pub enum GlobalDirective {
     Diagnostic(DiagnosticDirective),
     Enable(EnableDirective),
     Requires(RequiresDirective),
+    /// WESL extension
+    ModuleAttribute(ModuleAttributeDirective),
+}
+
+/// WESL extension: module-level metadata such as `@!wildcardable;`.
+#[cfg_attr(feature = "tokrepr", derive(TokRepr))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModuleAttributeDirective {
+    /// Attributes preceding the directive, such as `@if`.
+    pub attributes: Attributes,
+    /// Name after the `@!`.
+    pub name: String,
+    /// Optional parenthesized arguments.
+    pub arguments: Option<Vec<ExpressionNode>>,
 }
 
 #[cfg_attr(feature = "tokrepr", derive(TokRepr))]

@@ -87,6 +87,52 @@ pub enum UsageError {
         min_vis: Visibility,
         decl_vis: Visibility,
     },
+    #[error(
+        "wildcard import from the external module `{0}`, which is not marked `@!wildcardable` (`unsupported_wildcard`)"
+    )]
+    /// Wildcard import from an external module that is not `@!wildcardable`.
+    UnsupportedWildcard(ModulePath),
+    #[error(
+        "wildcard import from the external module `{0}` in library code (`cross_package_wildcard`)"
+    )]
+    /// Wildcard import across packages in library code.
+    CrossPackageWildcard(ModulePath),
+    #[error(
+        "`{name}` is ambiguous: wildcard imports provide different declarations from {}",
+        .candidates.iter().map(|path| format!("`{path}`")).collect::<Vec<_>>().join(", ")
+    )]
+    /// A name is provided by several wildcard imports with different declarations.
+    AmbiguousWildcard {
+        /// The referenced name.
+        name: String,
+        /// The modules that provide the name.
+        candidates: Vec<ModulePath>,
+    },
+}
+
+/// Non-fatal diagnostic emitted by the compiler. See [`crate::CompileResult::warnings`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash, thiserror::Error)]
+pub enum Warning {
+    #[error(
+        "`{name}` in `{module}` shadows a name brought in by a wildcard import (`wildcard_shadow`)"
+    )]
+    /// A declaration or named import shadows a wildcard imported name.
+    WildcardShadow {
+        /// The module with the shadowing declaration or import.
+        module: ModulePath,
+        /// The shadowing name.
+        name: String,
+    },
+    #[error(
+        "`{name}` in the `@!wildcardable` module `{module}` shadows a WGSL built-in (`builtin_shadow`)"
+    )]
+    /// A declaration of a `@!wildcardable` module shadows a WGSL built-in.
+    BuiltinShadow {
+        /// The `@!wildcardable` module.
+        module: ModulePath,
+        /// The shadowing name.
+        name: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -506,6 +552,9 @@ impl Diagnostic<Error> {
                     }
                     unmangle_id(&mut decl.1, sourcemap, mangler);
                 }
+                UsageError::UnsupportedWildcard(_)
+                | UsageError::CrossPackageWildcard(_)
+                | UsageError::AmbiguousWildcard { .. } => {}
             },
             Error::CondCompError(e) => match e {
                 CondCompError::InvalidExpression(expr) => unmangle_expr(expr, sourcemap, mangler),

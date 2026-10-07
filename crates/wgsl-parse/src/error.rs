@@ -40,6 +40,8 @@ pub enum ErrorKind {
     UnsupportedExtension(&'static str),
     #[error("invalid {0} declaration: {1}")]
     InvalidDeclaration(DeclarationKind, &'static str),
+    #[error("invalid import, {0}")]
+    InvalidImport(&'static str),
 }
 
 #[derive(Default, Clone, Debug, PartialEq)]
@@ -53,6 +55,7 @@ pub enum ParseError {
     MixedBinaryOperators(BinaryOperator, BinaryOperator),
     UnsupportedExtension(&'static str),
     InvalidDeclaration(DeclarationKind, &'static str),
+    InvalidImport(&'static str),
 }
 
 type LalrpopError = lalrpop_util::ParseError<usize, Token, (usize, ParseError, usize)>;
@@ -126,6 +129,7 @@ impl From<LalrpopError> for Error {
                     ParseError::InvalidDeclaration(kind, msg) => {
                         ErrorKind::InvalidDeclaration(kind, msg)
                     }
+                    ParseError::InvalidImport(msg) => ErrorKind::InvalidImport(msg),
                 };
                 Self { span, error }
             }

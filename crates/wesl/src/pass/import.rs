@@ -11,13 +11,46 @@ pub struct ImportedItem {
 
 pub type Imports = HashMap<Ident, ImportedItem>;
 
-/// Flatten imports to a list.
-pub fn flatten_imports(imports: &[ImportStatement], path: &ModulePath) -> Imports {
-    fn rec(content: &ImportContent, path: ModulePath, visibility: Visibility, res: &mut Imports) {
+/// A wildcard import (`import path::*;`).
+#[derive(Clone, Debug)]
+pub struct WildcardImport {
+    /// Module whose visible top-level items are imported.
+    pub path: ModulePath,
+    /// Diagnostic rules turned off with `@diagnostic(off, ..)` on the import statement.
+    pub suppressed: Vec<String>,
+}
+
+/// Rules turned off by `@diagnostic(off, rule)` among `attrs`.
+pub fn suppressed_rules(attrs: &[AttributeNode]) -> impl Iterator<Item = &str> {
+    attrs.iter().filter_map(|attr| match attr.node() {
+        Attribute::Diagnostic(diag) if diag.severity == DiagnosticSeverity::Off => {
+            Some(diag.rule.as_str())
+        }
+        _ => None,
+    })
+}
+
+/// Flatten imports to a list of named imports and a list of wildcard imports.
+pub(crate) fn flatten_all(
+    imports: &[ImportStatement],
+    path: &ModulePath,
+) -> (Imports, Vec<WildcardImport>) {
+    struct Flattener {
+        named: Imports,
+        wildcards: Vec<WildcardImport>,
+    }
+
+    fn rec(
+        content: &ImportContent,
+        path: ModulePath,
+        visibility: Visibility,
+        suppressed: &[String],
+        res: &mut Flattener,
+    ) {
         match content {
             ImportContent::Item(item) => {
                 let ident = item.rename.as_ref().unwrap_or(&item.ident).clone();
-                res.insert(
+                res.named.insert(
                     ident,
                     ImportedItem {
                         path,
@@ -29,26 +62,36 @@ pub fn flatten_imports(imports: &[ImportStatement], path: &ModulePath) -> Import
             ImportContent::Collection(coll) => {
                 for import in coll {
                     let path = path.clone().join(import.path.iter().cloned());
-                    rec(&import.content, path, visibility, res);
+                    rec(&import.content, path, visibility, suppressed, res);
                 }
             }
+            ImportContent::Wildcard => res.wildcards.push(WildcardImport {
+                path,
+                suppressed: suppressed.to_vec(),
+            }),
         }
     }
 
-    let mut res = Imports::default();
+    let mut res = Flattener {
+        named: Imports::default(),
+        wildcards: Vec::new(),
+    };
 
     for import in imports {
         let visibility = import.visibility;
+        let suppressed = suppressed_rules(&import.attributes)
+            .map(str::to_string)
+            .collect_vec();
         match &import.path {
             Some(import_path) => {
                 let path = path.join_path(import_path);
-                rec(&import.content, path, visibility, &mut res);
+                rec(&import.content, path, visibility, &suppressed, &mut res);
             }
             None => {
                 // this covers two cases: `import foo;` and `import {foo, ..};`.
                 // COMBAK: these edge-cases smell
                 match &import.content {
-                    ImportContent::Item(_) => {
+                    ImportContent::Item(_) | ImportContent::Wildcard => {
                         // `import foo`, this import statement does nothing currently.
                         // In the future, it may become a visibility/re-export mechanism.
                     }
@@ -61,7 +104,7 @@ pub fn flatten_imports(imports: &[ImportStatement], path: &ModulePath) -> Import
                                     PathOrigin::Package(pkg_name),
                                     components.collect_vec(),
                                 );
-                                rec(&import.content, path, visibility, &mut res);
+                                rec(&import.content, path, visibility, &suppressed, &mut res);
                             }
                         }
                     }
@@ -70,7 +113,12 @@ pub fn flatten_imports(imports: &[ImportStatement], path: &ModulePath) -> Import
         }
     }
 
-    res
+    (res.named, res.wildcards)
+}
+
+/// Flatten imports to a list.
+pub fn flatten_imports(imports: &[ImportStatement], path: &ModulePath) -> Imports {
+    flatten_all(imports, path).0
 }
 
 /// Find the normalized module path for an identifier in source, if it refers to an external declaration.

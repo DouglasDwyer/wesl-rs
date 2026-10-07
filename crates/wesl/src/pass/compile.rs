@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
+use itertools::Itertools;
 use wgsl_parse::syntax::{Ident, ModulePath, TranslationUnit, Visibility};
 
 use crate::{
     SyntaxUtil,
-    error::{Diagnostic, Error},
-    pass::{self, CompileResult, CompilerDriver, Module, UsedItems},
+    error::{Diagnostic, Error, Warning},
+    pass::{self, CompileResult, CompilerDriver, LoadedModules, Module, UsedItems},
     resolver::{AsyncResolver, Resolver},
 };
 
@@ -43,6 +44,76 @@ pub async fn load_module_async(
     Ok(module)
 }
 
+/// Canonical paths of the wildcard imported modules of `module` that are not loaded yet.
+fn unloaded_wildcard_targets(
+    driver: &impl CompilerDriver,
+    module: &Module,
+    modules: &[Module],
+    peeked: &HashMap<ModulePath, Module>,
+) -> Vec<ModulePath> {
+    module
+        .wildcards
+        .iter()
+        .map(|wildcard| driver.canonical_path(&wildcard.path))
+        .filter(|path| {
+            *path != module.path
+                && !modules.iter().any(|m| m.path == *path)
+                && !peeked.contains_key(path)
+        })
+        .unique()
+        .collect()
+}
+
+/// Add a freshly loaded module to the modules in use.
+///
+/// The modules it wildcard imports are loaded into `peeked`, so their items are known. They
+/// are only used by the compilation (and no `const_assert` is included) when referenced.
+fn add_module(
+    driver: &mut impl CompilerDriver,
+    mut module: Module,
+    modules: &mut Vec<Module>,
+    peeked: &mut HashMap<ModulePath, Module>,
+    warnings: &mut Vec<Warning>,
+) -> Result<(), Error> {
+    for path in unloaded_wildcard_targets(driver, &module, modules, peeked) {
+        let syntax = driver.load_module(&path)?;
+        peeked.insert(path.clone(), Module::new(path, syntax));
+    }
+
+    let loaded = LoadedModules::new(modules, peeked);
+    warnings.extend(driver.resolve_wildcards(&mut module, &loaded)?);
+    modules.push(module);
+    Ok(())
+}
+
+/// Async version of [`add_module`].
+async fn add_module_async(
+    driver: &mut impl CompilerDriver,
+    mut module: Module,
+    modules: &mut Vec<Module>,
+    peeked: &mut HashMap<ModulePath, Module>,
+    warnings: &mut Vec<Warning>,
+) -> Result<(), Error> {
+    for path in unloaded_wildcard_targets(driver, &module, modules, peeked) {
+        let syntax = driver.load_module_async(&path).await?;
+        peeked.insert(path.clone(), Module::new(path, syntax));
+    }
+
+    let loaded = LoadedModules::new(modules, peeked);
+    warnings.extend(driver.resolve_wildcards(&mut module, &loaded)?);
+    modules.push(module);
+    Ok(())
+}
+
+/// Register the modules loaded only to read wildcard imported items, without any used item.
+///
+/// This way users of [`UsedItems`] know that the result depends on them.
+fn record_peeked_modules(used_items: &mut UsedItems, peeked: HashMap<ModulePath, Module>) {
+    for path in peeked.into_keys() {
+        used_items.insert_module(path, HashMap::new());
+    }
+}
+
 /// Default implementation of [`CompilerDriver::compile`]
 pub fn compile(driver: &mut impl CompilerDriver) -> Result<CompileResult, Error> {
     let main_path = driver.main_path().clone();
@@ -54,7 +125,15 @@ pub fn compile(driver: &mut impl CompilerDriver) -> Result<CompileResult, Error>
         .collect::<HashMap<Ident, Visibility>>();
 
     let mut modules = Vec::new();
-    modules.push(Module::new(main_path.clone(), main_module));
+    let mut peeked = HashMap::new();
+    let mut warnings = Vec::new();
+    add_module(
+        driver,
+        Module::new(main_path.clone(), main_module),
+        &mut modules,
+        &mut peeked,
+        &mut warnings,
+    )?;
 
     let mut used_items = UsedItems::new();
     let mut to_analyze = UsedItems::new();
@@ -65,13 +144,17 @@ pub fn compile(driver: &mut impl CompilerDriver) -> Result<CompileResult, Error>
 
         for (path, items_to_analyze) in to_analyze.iter() {
             let path = driver.canonical_path(path);
-            let module = match modules.iter().find(|module| module.path == path) {
-                Some(module) => module,
-                None => {
-                    let module = driver.load_module(&path)?;
-                    modules.push_mut(Module::new(path, module))
-                }
-            };
+            if !modules.iter().any(|module| module.path == path) {
+                let module = match peeked.remove(&path) {
+                    Some(module) => module,
+                    None => Module::new(path.clone(), driver.load_module(&path)?),
+                };
+                add_module(driver, module, &mut modules, &mut peeked, &mut warnings)?;
+            }
+            let module = modules
+                .iter()
+                .find(|module| module.path == path)
+                .unwrap(/* SAFETY: the module was just added */);
 
             driver.module_usage_analysis(module, &mut used_items, &mut next_to_analyze)?;
 
@@ -93,12 +176,15 @@ pub fn compile(driver: &mut impl CompilerDriver) -> Result<CompileResult, Error>
         to_analyze = next_to_analyze;
     }
 
+    record_peeked_modules(&mut used_items, peeked);
+
     let final_module = driver.link(&mut modules, &used_items)?;
 
     Ok(CompileResult {
         syntax: final_module,
         modules,
         used_items,
+        warnings,
     })
 }
 
@@ -112,7 +198,16 @@ pub async fn compile_async(driver: &mut impl CompilerDriver) -> Result<CompileRe
         .collect::<HashMap<Ident, Visibility>>();
 
     let mut modules = Vec::new();
-    modules.push(Module::new(main_path.clone(), main_module));
+    let mut peeked = HashMap::new();
+    let mut warnings = Vec::new();
+    add_module_async(
+        driver,
+        Module::new(main_path.clone(), main_module),
+        &mut modules,
+        &mut peeked,
+        &mut warnings,
+    )
+    .await?;
 
     let mut used_items = UsedItems::new();
     let mut to_analyze = UsedItems::new();
@@ -123,13 +218,17 @@ pub async fn compile_async(driver: &mut impl CompilerDriver) -> Result<CompileRe
 
         for (path, items_to_analyze) in to_analyze.iter() {
             let path = driver.canonical_path(path);
-            let module = match modules.iter().find(|module| module.path == path) {
-                Some(module) => module,
-                None => {
-                    let module = driver.load_module_async(&path).await?;
-                    modules.push_mut(Module::new(path, module))
-                }
-            };
+            if !modules.iter().any(|module| module.path == path) {
+                let module = match peeked.remove(&path) {
+                    Some(module) => module,
+                    None => Module::new(path.clone(), driver.load_module_async(&path).await?),
+                };
+                add_module_async(driver, module, &mut modules, &mut peeked, &mut warnings).await?;
+            }
+            let module = modules
+                .iter()
+                .find(|module| module.path == path)
+                .unwrap(/* SAFETY: the module was just added */);
 
             driver.module_usage_analysis(module, &mut used_items, &mut next_to_analyze)?;
 
@@ -151,11 +250,14 @@ pub async fn compile_async(driver: &mut impl CompilerDriver) -> Result<CompileRe
         to_analyze = next_to_analyze;
     }
 
+    record_peeked_modules(&mut used_items, peeked);
+
     let final_module = driver.link(&mut modules, &used_items)?;
 
     Ok(CompileResult {
         syntax: final_module,
         modules,
         used_items,
+        warnings,
     })
 }
