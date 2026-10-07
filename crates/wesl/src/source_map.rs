@@ -1,10 +1,17 @@
 //! [`SourceMap`] trait and implementations.
 
-use std::{cell::RefCell, collections::HashMap, path::PathBuf};
+use std::{cell::RefCell, collections::HashMap, ops::Range, path::PathBuf};
 
-use wgsl_parse::{span::Span, syntax::TypeExpression};
+use wgsl_parse::{
+    span::Span,
+    syntax::{TranslationUnit, TypeExpression},
+};
 
-use crate::{ModulePath, error::ResolveError, mangler::Mangler, resolver::Resolver};
+pub use crate::spanmap::{MappedDiagnostic, MappedLabel, SourceLocation};
+use crate::{
+    ModulePath, error::ResolveError, mangler::Mangler, pass::Module, resolver::Resolver, spanmap,
+    spanmap::Output,
+};
 
 /// A SourceMap is a lookup from compiled WGSL to source WESL. It translates a mangled
 /// name into a module path and declaration name.
@@ -26,6 +33,51 @@ pub trait SourceMap {
     /// Get the default module contents.
     fn default_source(&self) -> Option<&str> {
         None
+    }
+    /// Replaces the mangled names in `text` by the paths they come from.
+    fn demangle_message(&self, text: &str) -> String {
+        let is_separator = |c: char| !(c.is_alphanumeric() || c == '_');
+        text.split_inclusive(is_separator)
+            .map(|piece| {
+                let (word, separator) =
+                    piece.split_at(piece.find(is_separator).unwrap_or(piece.len()));
+                match self.item(word).filter(|entry| entry.name != word) {
+                    Some(entry) => format!("{}::{}{separator}", entry.path, entry.name),
+                    None => piece.to_string(),
+                }
+            })
+            .collect()
+    }
+    /// Translates a byte range of the compiled code to the innermost syntax node that contains it.
+    ///
+    /// The range is exact if the node was printed as written, and widened to the node otherwise.
+    /// Returns `None` unless the map was finished with the compiled code.
+    fn destination_to_source(&self, _span: Range<usize>) -> Option<SourceLocation> {
+        None
+    }
+    /// Creates a diagnostic from a message and labeled ranges of the compiled code.
+    ///
+    /// The last label is the primary one, as in the validation errors of naga.
+    fn diagnostic(
+        &self,
+        message: impl AsRef<str>,
+        labels: impl IntoIterator<Item = (Range<usize>, String)>,
+    ) -> MappedDiagnostic
+    where
+        Self: Sized,
+    {
+        spanmap::diagnostic(self, message, labels)
+    }
+    /// Like [`Self::diagnostic`], with the chain of causes of `error` added as notes.
+    fn diagnostic_from_error(
+        &self,
+        error: &(dyn std::error::Error + 'static),
+        labels: impl IntoIterator<Item = (Range<usize>, String)>,
+    ) -> MappedDiagnostic
+    where
+        Self: Sized,
+    {
+        spanmap::diagnostic_from_error(self, error, labels)
     }
 }
 
@@ -49,6 +101,7 @@ pub struct BasicSourceMap {
     mappings: HashMap<String, SourceMapEntry>,
     sources: HashMap<ModulePath, SourceMapFile>,
     default_source: Option<String>,
+    pub(crate) output: Option<Output>,
 }
 
 impl BasicSourceMap {
@@ -57,6 +110,10 @@ impl BasicSourceMap {
     }
     pub fn add_item(&mut self, decl: String, entry: SourceMapEntry) {
         self.mappings.insert(decl, entry);
+    }
+    /// Iterates over the mangled names and the declarations they come from.
+    pub fn items(&self) -> impl Iterator<Item = (&str, &SourceMapEntry)> {
+        self.mappings.iter().map(|(k, v)| (k.as_str(), v))
     }
     pub fn file(&self, path: &ModulePath) -> Option<&SourceMapFile> {
         self.sources.get(path)
@@ -84,6 +141,9 @@ impl SourceMap for BasicSourceMap {
     fn default_source(&self) -> Option<&str> {
         self.default_source.as_deref()
     }
+    fn destination_to_source(&self, span: Range<usize>) -> Option<SourceLocation> {
+        spanmap::destination_to_source(self, span)
+    }
 }
 
 impl<T: SourceMap> SourceMap for Option<T> {
@@ -98,6 +158,10 @@ impl<T: SourceMap> SourceMap for Option<T> {
     }
     fn default_source(&self) -> Option<&str> {
         self.as_ref().and_then(|map| map.default_source())
+    }
+    fn destination_to_source(&self, span: Range<usize>) -> Option<SourceLocation> {
+        self.as_ref()
+            .and_then(|map| map.destination_to_source(span))
     }
 }
 
@@ -155,6 +219,18 @@ impl<'a> SourceMapper<'a> {
         if let Some(file) = source_map.file(&self.main_path) {
             source_map.set_default_source(file.source.to_string());
         }
+        source_map
+    }
+    /// Like [`Self::finish`], and records the compiled code of `syntax` for [`BasicSourceMap::destination_to_source`].
+    ///
+    /// `modules` are the modules `syntax` was linked from.
+    pub fn finish_with_output(
+        self,
+        syntax: &TranslationUnit,
+        modules: &[Module],
+    ) -> BasicSourceMap {
+        let mut source_map = self.finish();
+        source_map.output = Some(Output::new(syntax, modules, &source_map));
         source_map
     }
 }

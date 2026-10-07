@@ -238,7 +238,10 @@ pub fn compile(
         let source_mapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
         let mut pass = CompilationPass::new(main_path, options, &source_mapper, &source_mapper);
         let res = CompilerDriver::compile(&mut pass);
-        let source_map = source_mapper.finish();
+        let source_map = match &res {
+            Ok(res) => source_mapper.finish_with_output(&res.syntax, &res.modules),
+            Err(_) => source_mapper.finish(),
+        };
         let res = res.map_err(|e| Diagnostic::from(e).with_source_map(&source_map))?;
 
         Ok(CompileResult::new(res, Some(source_map)))
@@ -261,7 +264,10 @@ pub async fn compile_async(
         let source_mapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
         let mut pass = CompilationPass::new(main_path, options, &source_mapper, &source_mapper);
         let res = CompilerDriver::compile_async(&mut pass).await;
-        let source_map = source_mapper.finish();
+        let source_map = match &res {
+            Ok(res) => source_mapper.finish_with_output(&res.syntax, &res.modules),
+            Err(_) => source_mapper.finish(),
+        };
         let res = res.map_err(|e| Diagnostic::from(e).with_source_map(&source_map))?;
 
         Ok(CompileResult::new(res, Some(source_map)))
@@ -483,9 +489,12 @@ impl CompileResult {
         &self.used_items
     }
 
-    /// Creates the result of a compilation, printing the compiled WGSL.
+    /// Creates the result of a compilation, keeping the compiled WGSL the source map recorded.
     fn new(res: pass::CompileResult, source_map: Option<BasicSourceMap>) -> Self {
-        let wgsl = res.syntax.to_string().into();
+        let wgsl = match source_map.as_ref().and_then(|map| map.output.as_ref()) {
+            Some(output) => output.emitted.clone(),
+            None => res.syntax.to_string().into(),
+        };
         Self {
             modules: res.modules,
             source_map,

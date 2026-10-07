@@ -1,772 +1,833 @@
-use crate::{span::Spanned, syntax::*};
+use crate::{
+    span::Spanned,
+    syntax::*,
+    syntax_writer::{Print, SyntaxWriter},
+};
 use core::fmt;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as _};
 
-use itertools::Itertools;
-
-// unstable: https://doc.rust-lang.org/std/fmt/struct.FormatterFn.html
-struct FormatFn<F: (Fn(&mut Formatter) -> fmt::Result)>(F);
-
-impl<F: Fn(&mut Formatter) -> fmt::Result> Display for FormatFn<F> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        (self.0)(f)
-    }
-}
-
-impl<T: Display> Display for Spanned<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        self.node().fmt(f)
-    }
-}
-
-struct Indent<T: Display>(pub T);
-
-impl<T: Display> Display for Indent<T> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let indent = "    ";
-        let inner_display = self.0.to_string();
-        let fmt = inner_display
-            .lines()
-            .format_with("\n", |l, f| f(&format_args!("{indent}{l}")));
-        write!(f, "{fmt}")?;
-        Ok(())
-    }
-}
-
-impl Display for TranslationUnit {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        if !self.imports.is_empty() {
-            for import in &self.imports {
-                writeln!(f, "{import}\n")?;
+/// Implements [`Display`] for syntax nodes by printing them with a [`SyntaxWriter`].
+macro_rules! impl_display {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl Display for $ty {
+                fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+                    self.print(&mut SyntaxWriter::new(f))
+                }
             }
+        )+
+    };
+}
+
+impl<T: Print> Display for Spanned<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        self.print(&mut SyntaxWriter::new(f))
+    }
+}
+
+impl<T: Print> Print for Spanned<T> {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.with_span(self.span(), |w| self.node().print(w))
+    }
+}
+
+/// Prints `attributes` separated by spaces, then a space if `inline` or a newline otherwise.
+fn print_attributes(
+    w: &mut SyntaxWriter<'_>,
+    attributes: &[AttributeNode],
+    inline: bool,
+) -> fmt::Result {
+    w.join(attributes, " ")?;
+    match (attributes.is_empty(), inline) {
+        (true, _) => Ok(()),
+        (false, true) => w.write_str(" "),
+        (false, false) => w.write_str("\n"),
+    }
+}
+
+/// Prints `visibility` followed by a space, or nothing for package visibility.
+fn print_visibility(w: &mut SyntaxWriter<'_>, visibility: Visibility) -> fmt::Result {
+    match visibility {
+        Visibility::Public => w.write_str("public "),
+        Visibility::Package => Ok(()),
+        Visibility::Private => w.write_str("private "),
+    }
+}
+
+/// Prints an attribute that takes one expression, like `@group(0)`.
+fn print_attribute_call(
+    w: &mut SyntaxWriter<'_>,
+    name: &str,
+    argument: &ExpressionNode,
+) -> fmt::Result {
+    write!(w, "@{name}(")?;
+    w.print(argument)?;
+    w.write_str(")")
+}
+
+impl Print for TranslationUnit {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        for import in &self.imports {
+            w.print(import)?;
+            w.write_str("\n\n")?;
         }
         if !self.global_directives.is_empty() {
-            let directives = self.global_directives.iter().format("\n");
-            write!(f, "{directives}\n\n")?;
+            w.join(&self.global_directives, "\n")?;
+            w.write_str("\n\n")?;
         }
         let declarations = self
             .global_declarations
             .iter()
-            .filter(|decl| !matches!(decl.node(), GlobalDeclaration::Void))
-            .format("\n\n");
-        writeln!(f, "{declarations}")
+            .filter(|decl| !matches!(decl.node(), GlobalDeclaration::Void));
+        w.join(declarations, "\n\n")?;
+        w.write_str("\n")
     }
 }
 
-impl Display for Ident {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name())
+impl Print for Ident {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.write_str(&self.name())
     }
 }
 
-impl Display for Visibility {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl Print for Visibility {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            Visibility::Private => f.write_str("private"),
-            Visibility::Package => f.write_str("package"),
-            Visibility::Public => f.write_str("public"),
+            Visibility::Private => w.write_str("private"),
+            Visibility::Package => w.write_str("package"),
+            Visibility::Public => w.write_str("public"),
         }
     }
 }
 
-impl Display for ImportStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}{}",
-            fmt_attrs(&self.attributes, false),
-            fmt_visibility(self.visibility)
-        )?;
-        let content = &self.content;
+impl Print for ImportStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        print_visibility(w, self.visibility)?;
+        w.write_str("import ")?;
         if let Some(path) = &self.path {
-            write!(f, "import {path}::{content};")
-        } else {
-            write!(f, "import {content};")
+            w.print(path)?;
+            w.write_str("::")?;
         }
+        w.print(&self.content)?;
+        w.write_str(";")
     }
 }
 
-impl Display for ModulePath {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Print for ModulePath {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match &self.origin {
-            PathOrigin::Absolute => write!(f, "package")?,
-            PathOrigin::Relative(0) => write!(f, "self")?,
-            PathOrigin::Relative(n) => write!(f, "{}", (0..*n).map(|_| "super").format("::"))?,
-            PathOrigin::Package(p) => write!(f, "{p}")?,
-        };
+            PathOrigin::Absolute => w.write_str("package")?,
+            PathOrigin::Relative(0) => w.write_str("self")?,
+            PathOrigin::Relative(n) => w.join_by(0..*n, "::", |w, _| w.write_str("super"))?,
+            PathOrigin::Package(p) => w.write_str(p)?,
+        }
         if !self.components.is_empty() {
-            write!(f, "::{}", self.components.iter().format("::"))?;
+            w.write_str("::")?;
+            w.join_by(&self.components, "::", |w, c| w.write_str(c))?;
         }
         Ok(())
     }
 }
 
-impl Display for Import {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Print for Import {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         if !self.path.is_empty() {
-            let path = self.path.iter().format("::");
-            write!(f, "{path}::")?;
+            w.join_by(&self.path, "::", |w, c| w.write_str(c))?;
+            w.write_str("::")?;
         }
-        let content = &self.content;
-        write!(f, "{content}")
+        w.print(&self.content)
     }
 }
 
-impl Display for ImportContent {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for ImportContent {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
             ImportContent::Item(item) => {
-                write!(f, "{}", item.ident)?;
+                w.print(&item.ident)?;
                 if let Some(rename) = &item.rename {
-                    write!(f, " as {rename}")?;
+                    w.write_str(" as ")?;
+                    w.print(rename)?;
                 }
                 Ok(())
             }
             ImportContent::Collection(coll) => {
-                let coll = coll.iter().format(", ");
-                write!(f, "{{ {coll} }}")
+                w.write_str("{ ")?;
+                w.join(coll, ", ")?;
+                w.write_str(" }")
             }
         }
     }
 }
 
-impl Display for GlobalDirective {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for GlobalDirective {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            GlobalDirective::Diagnostic(print) => write!(f, "{print}"),
-            GlobalDirective::Enable(print) => write!(f, "{print}"),
-            GlobalDirective::Requires(print) => write!(f, "{print}"),
+            GlobalDirective::Diagnostic(print) => w.print(print),
+            GlobalDirective::Enable(print) => w.print(print),
+            GlobalDirective::Requires(print) => w.print(print),
         }
     }
 }
 
-impl Display for DiagnosticDirective {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let severity = &self.severity;
-        let rule = &self.rule_name;
-        write!(f, "diagnostic ({severity}, {rule});")
+impl Print for DiagnosticDirective {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        write!(w, "diagnostic ({}, {});", self.severity, self.rule_name)
     }
 }
 
-impl Display for EnableDirective {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let exts = self.extensions.iter().format(", ");
-        write!(f, "enable {exts};")
+impl Print for EnableDirective {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("enable ")?;
+        w.join_by(&self.extensions, ", ", |w, ext| write!(w, "{ext}"))?;
+        w.write_str(";")
     }
 }
 
-impl Display for RequiresDirective {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let exts = self.extensions.iter().format(", ");
-        write!(f, "requires {exts};")
+impl Print for RequiresDirective {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("requires ")?;
+        w.join_by(&self.extensions, ", ", |w, ext| write!(w, "{ext}"))?;
+        w.write_str(";")
     }
 }
 
-impl Display for GlobalDeclaration {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for GlobalDeclaration {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            GlobalDeclaration::Void => write!(f, ";"),
-            GlobalDeclaration::Declaration(print) => write!(f, "{print}"),
-            GlobalDeclaration::TypeAlias(print) => write!(f, "{print}"),
-            GlobalDeclaration::Struct(print) => write!(f, "{print}"),
-            GlobalDeclaration::Function(print) => write!(f, "{print}"),
-            GlobalDeclaration::ConstAssert(print) => write!(f, "{print}"),
-            GlobalDeclaration::Compound(print) => write!(f, "{print}"),
+            GlobalDeclaration::Void => w.write_str(";"),
+            GlobalDeclaration::Declaration(print) => w.print(print),
+            GlobalDeclaration::TypeAlias(print) => w.print(print),
+            GlobalDeclaration::Struct(print) => w.print(print),
+            GlobalDeclaration::Function(print) => w.print(print),
+            GlobalDeclaration::ConstAssert(print) => w.print(print),
+            GlobalDeclaration::Compound(print) => w.print(print),
         }
     }
 }
 
-impl Display for Declaration {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}{}",
-            fmt_attrs(&self.attributes, false),
-            fmt_visibility(self.visibility)
-        )?;
-        let kind = &self.kind;
-        let name = &self.ident;
-        let ty = self
-            .ty
-            .iter()
-            .format_with("", |ty, f| f(&format_args!(": {ty}")));
-        let init = self
-            .initializer
-            .iter()
-            .format_with("", |ty, f| f(&format_args!(" = {ty}")));
-        write!(f, "{kind} {name}{ty}{init};")
+impl Print for Declaration {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        print_visibility(w, self.visibility)?;
+        w.print(&self.kind)?;
+        w.write_str(" ")?;
+        w.print(&self.ident)?;
+        if let Some(ty) = &self.ty {
+            w.write_str(": ")?;
+            w.print(ty)?;
+        }
+        if let Some(init) = &self.initializer {
+            w.write_str(" = ")?;
+            w.print(init)?;
+        }
+        w.write_str(";")
     }
 }
 
-impl Display for DeclarationKind {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for DeclarationKind {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            Self::Const => write!(f, "const"),
-            Self::Override => write!(f, "override"),
-            Self::Let => write!(f, "let"),
-            Self::Var(None) => write!(f, "var"),
-            Self::Var(Some((a_s, None))) => write!(f, "var<{a_s}>"),
-            Self::Var(Some((a_s, Some(a_m)))) => write!(f, "var<{a_s}, {a_m}>"),
+            Self::Const => w.write_str("const"),
+            Self::Override => w.write_str("override"),
+            Self::Let => w.write_str("let"),
+            Self::Var(None) => w.write_str("var"),
+            Self::Var(Some((a_s, None))) => write!(w, "var<{a_s}>"),
+            Self::Var(Some((a_s, Some(a_m)))) => write!(w, "var<{a_s}, {a_m}>"),
         }
     }
 }
 
-impl Display for TypeAlias {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}{}",
-            fmt_attrs(&self.attributes, false),
-            fmt_visibility(self.visibility)
-        )?;
-        let name = &self.ident;
-        let ty = &self.ty;
-        write!(f, "alias {name} = {ty};")
+impl Print for TypeAlias {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        print_visibility(w, self.visibility)?;
+        w.write_str("alias ")?;
+        w.print(&self.ident)?;
+        w.write_str(" = ")?;
+        w.print(&self.ty)?;
+        w.write_str(";")
     }
 }
 
-impl Display for Struct {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}{}",
-            fmt_attrs(&self.attributes, false),
-            fmt_visibility(self.visibility)
-        )?;
-        let name = &self.ident;
-        let members = Indent(self.members.iter().format(",\n"));
-        write!(f, "struct {name} {{\n{members}\n}}")
+impl Print for Struct {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        print_visibility(w, self.visibility)?;
+        w.write_str("struct ")?;
+        w.print(&self.ident)?;
+        w.write_str(" {\n")?;
+        w.indented(|w| w.join(&self.members, ",\n"))?;
+        w.write_str("\n}")
     }
 }
 
-impl Display for StructMember {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let name = &self.ident;
-        let ty = &self.ty;
-        write!(f, "{name}: {ty}")
+impl Print for StructMember {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.print(&self.ident)?;
+        w.write_str(": ")?;
+        w.print(&self.ty)
     }
 }
 
-impl Display for Function {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}{}",
-            fmt_attrs(&self.attributes, false),
-            fmt_visibility(self.visibility)
-        )?;
-        let name = &self.ident;
-        let params = self.parameters.iter().format(", ");
-        let ret_ty = self.return_type.iter().format_with("", |ty, f| {
-            f(&FormatFn(|f: &mut Formatter| {
-                write!(f, "-> ")?;
-                write!(f, "{}", fmt_attrs(&self.return_attributes, true))?;
-                write!(f, "{ty} ")?;
-                Ok(())
-            }))
-        });
-        let body = &self.body;
-        write!(f, "fn {name}({params}) {ret_ty}{body}")
+impl Print for Function {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        print_visibility(w, self.visibility)?;
+        w.write_str("fn ")?;
+        w.print(&self.ident)?;
+        w.write_str("(")?;
+        w.join(&self.parameters, ", ")?;
+        w.write_str(") ")?;
+        if let Some(ty) = &self.return_type {
+            w.write_str("-> ")?;
+            print_attributes(w, &self.return_attributes, true)?;
+            w.print(ty)?;
+            w.write_str(" ")?;
+        }
+        w.print(&self.body)
     }
 }
 
-impl Display for FormalParameter {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, true))?;
-        let name = &self.ident;
-        let ty = &self.ty;
-        write!(f, "{name}: {ty}")
+impl Print for FormalParameter {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, true)?;
+        w.print(&self.ident)?;
+        w.write_str(": ")?;
+        w.print(&self.ty)
     }
 }
 
-impl Display for ConstAssert {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let expr = &self.expression;
-        write!(f, "const_assert {expr};",)
+impl Print for ConstAssert {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("const_assert ")?;
+        w.print(&self.expression)?;
+        w.write_str(";")
     }
 }
 
-impl Display for CompoundGlobalDeclaration {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let stmts = Indent(self.body.iter().format("\n"));
-        write!(f, "{{\n{stmts}\n}}")
+impl Print for CompoundGlobalDeclaration {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("{\n")?;
+        w.indented(|w| w.join(&self.body, "\n"))?;
+        w.write_str("\n}")
     }
 }
 
-impl Display for Attribute {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for Attribute {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            Attribute::Align(e1) => write!(f, "@align({e1})"),
-            Attribute::Binding(e1) => write!(f, "@binding({e1})"),
-            Attribute::BlendSrc(e1) => write!(f, "@blend_src({e1})"),
-            Attribute::Builtin(e1) => write!(f, "@builtin({e1})"),
-            Attribute::Const => write!(f, "@const"),
+            Attribute::Align(e1) => print_attribute_call(w, "align", e1),
+            Attribute::Binding(e1) => print_attribute_call(w, "binding", e1),
+            Attribute::BlendSrc(e1) => print_attribute_call(w, "blend_src", e1),
+            Attribute::Builtin(e1) => write!(w, "@builtin({e1})"),
+            Attribute::Const => w.write_str("@const"),
             Attribute::Diagnostic(DiagnosticAttribute { severity, rule }) => {
-                write!(f, "@diagnostic({severity}, {rule})")
+                write!(w, "@diagnostic({severity}, {rule})")
             }
-            Attribute::Group(e1) => write!(f, "@group({e1})"),
-            Attribute::Id(e1) => write!(f, "@id({e1})"),
+            Attribute::Group(e1) => print_attribute_call(w, "group", e1),
+            Attribute::Id(e1) => print_attribute_call(w, "id", e1),
             Attribute::Interpolate(InterpolateAttribute { ty, sampling }) => {
+                write!(w, "@interpolate({ty}")?;
                 if let Some(sampling) = sampling {
-                    write!(f, "@interpolate({ty}, {sampling})")
-                } else {
-                    write!(f, "@interpolate({ty})")
+                    write!(w, ", {sampling}")?;
                 }
+                w.write_str(")")
             }
-            Attribute::Invariant => write!(f, "@invariant"),
-            Attribute::Location(e1) => write!(f, "@location({e1})"),
-            Attribute::MustUse => write!(f, "@must_use"),
-            Attribute::Size(e1) => write!(f, "@size({e1})"),
+            Attribute::Invariant => w.write_str("@invariant"),
+            Attribute::Location(e1) => print_attribute_call(w, "location", e1),
+            Attribute::MustUse => w.write_str("@must_use"),
+            Attribute::Size(e1) => print_attribute_call(w, "size", e1),
             Attribute::WorkgroupSize(WorkgroupSizeAttribute { x, y, z }) => {
-                let xyz = std::iter::once(x).chain(y).chain(z).format(", ");
-                write!(f, "@workgroup_size({xyz})")
+                w.write_str("@workgroup_size(")?;
+                w.join(std::iter::once(x).chain(y).chain(z), ", ")?;
+                w.write_str(")")
             }
-            Attribute::Vertex => write!(f, "@vertex"),
-            Attribute::Fragment => write!(f, "@fragment"),
-            Attribute::Compute => write!(f, "@compute"),
+            Attribute::Vertex => w.write_str("@vertex"),
+            Attribute::Fragment => w.write_str("@fragment"),
+            Attribute::Compute => w.write_str("@compute"),
 
             // wesl extensions
-            Attribute::If(e1) => write!(f, "@if({e1})"),
-            Attribute::Elif(e1) => write!(f, "@elif({e1})"),
-            Attribute::Else => write!(f, "@else"),
+            Attribute::If(e1) => print_attribute_call(w, "if", e1),
+            Attribute::Elif(e1) => print_attribute_call(w, "elif", e1),
+            Attribute::Else => w.write_str("@else"),
             #[cfg(feature = "generics")]
-            Attribute::Type(e1) => write!(f, "@type({e1})"),
+            Attribute::Type(e1) => {
+                w.write_str("@type(")?;
+                w.print(e1)?;
+                w.write_str(")")
+            }
 
             // naga extensions
             #[cfg(feature = "naga-ext")]
-            Attribute::Task => write!(f, "@task"),
+            Attribute::Task => w.write_str("@task"),
             #[cfg(feature = "naga-ext")]
-            Attribute::Payload(p) => write!(f, "@payload({p})"),
+            Attribute::Payload(p) => print_attribute_call(w, "payload", p),
             #[cfg(feature = "naga-ext")]
-            Attribute::Mesh(m) => write!(f, "@mesh({m})"),
+            Attribute::Mesh(m) => print_attribute_call(w, "mesh", m),
             #[cfg(feature = "naga-ext")]
-            Attribute::RayGeneration => write!(f, "@ray_generation"),
+            Attribute::RayGeneration => w.write_str("@ray_generation"),
             #[cfg(feature = "naga-ext")]
-            Attribute::AnyHit => write!(f, "@any_hit"),
+            Attribute::AnyHit => w.write_str("@any_hit"),
             #[cfg(feature = "naga-ext")]
-            Attribute::ClosestHit => write!(f, "@closest_hit"),
+            Attribute::ClosestHit => w.write_str("@closest_hit"),
             #[cfg(feature = "naga-ext")]
-            Attribute::Miss => write!(f, "@miss"),
+            Attribute::Miss => w.write_str("@miss"),
             #[cfg(feature = "naga-ext")]
-            Attribute::IncomingPayload(p) => write!(f, "@incoming_payload({p})"),
+            Attribute::IncomingPayload(p) => print_attribute_call(w, "incoming_payload", p),
             #[cfg(feature = "naga-ext")]
-            Attribute::EarlyDepthTest(None) => write!(f, "@early_depth_test"),
+            Attribute::EarlyDepthTest(None) => w.write_str("@early_depth_test"),
             #[cfg(feature = "naga-ext")]
-            Attribute::EarlyDepthTest(Some(e1)) => write!(f, "@early_depth_test({e1})"),
+            Attribute::EarlyDepthTest(Some(e1)) => write!(w, "@early_depth_test({e1})"),
             Attribute::Custom(custom) => {
-                let name = &custom.name;
-                let args = custom.arguments.iter().format_with("", |args, f| {
-                    f(&format_args!("({})", args.iter().format(", ")))
-                });
-                write!(f, "@{name}{args}")
+                write!(w, "@{}", custom.name)?;
+                if let Some(args) = &custom.arguments {
+                    w.write_str("(")?;
+                    w.join(args, ", ")?;
+                    w.write_str(")")?;
+                }
+                Ok(())
             }
         }
     }
 }
 
 #[cfg(feature = "generics")]
-impl Display for TypeConstraint {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let name = &self.ident;
-        let variants = self.variants.iter().format(" | ");
-        write!(f, "{name}, {variants}")
+impl Print for TypeConstraint {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.print(&self.ident)?;
+        w.write_str(", ")?;
+        w.join(&self.variants, " | ")
     }
 }
 
-fn fmt_attrs(attrs: &[AttributeNode], inline: bool) -> impl fmt::Display + '_ {
-    FormatFn(move |f| {
-        let print = attrs.iter().format(" ");
-        let suffix = if attrs.is_empty() {
-            ""
-        } else if inline {
-            " "
-        } else {
-            "\n"
-        };
-        write!(f, "{print}{suffix}")
-    })
-}
-
-fn fmt_visibility(vis: Visibility) -> impl fmt::Display {
-    FormatFn(move |f| match vis {
-        Visibility::Public => f.write_str("public "),
-        Visibility::Package => Ok(()),
-        Visibility::Private => f.write_str("private "),
-    })
-}
-
-impl Display for Expression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for Expression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            Expression::Literal(print) => write!(f, "{print}"),
-            Expression::Parenthesized(print) => {
-                write!(f, "{print}")
-            }
-            Expression::NamedComponent(print) => write!(f, "{print}"),
-            Expression::Indexing(print) => write!(f, "{print}"),
-            Expression::Unary(print) => write!(f, "{print}"),
-            Expression::Binary(print) => write!(f, "{print}"),
-            Expression::FunctionCall(print) => write!(f, "{print}"),
-            Expression::TypeOrIdentifier(print) => write!(f, "{print}"),
+            Expression::Literal(print) => w.print(print),
+            Expression::Parenthesized(print) => w.print(print),
+            Expression::NamedComponent(print) => w.print(print),
+            Expression::Indexing(print) => w.print(print),
+            Expression::Unary(print) => w.print(print),
+            Expression::Binary(print) => w.print(print),
+            Expression::FunctionCall(print) => w.print(print),
+            Expression::TypeOrIdentifier(print) => w.print(print),
         }
     }
 }
 
-impl Display for LiteralExpression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for LiteralExpression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            LiteralExpression::Bool(true) => write!(f, "true"),
-            LiteralExpression::Bool(false) => write!(f, "false"),
-            LiteralExpression::AbstractInt(num) => write!(f, "{num}"),
-            LiteralExpression::AbstractFloat(num) => write!(f, "{num:?}"), // using the Debug formatter to print the trailing .0 in floats representing integers. because format!("{}", 3.0f32) == "3"
-            LiteralExpression::I32(num) => write!(f, "{num}i"),
-            LiteralExpression::U32(num) => write!(f, "{num}u"),
-            LiteralExpression::F32(num) => write!(f, "{num}f"),
-            LiteralExpression::F16(num) => write!(f, "{num}h"),
+            LiteralExpression::Bool(true) => w.write_str("true"),
+            LiteralExpression::Bool(false) => w.write_str("false"),
+            LiteralExpression::AbstractInt(num) => write!(w, "{num}"),
+            // the debug format keeps the trailing `.0` of floats that represent integers
+            LiteralExpression::AbstractFloat(num) => write!(w, "{num:?}"),
+            LiteralExpression::I32(num) => write!(w, "{num}i"),
+            LiteralExpression::U32(num) => write!(w, "{num}u"),
+            LiteralExpression::F32(num) => write!(w, "{num}f"),
+            LiteralExpression::F16(num) => write!(w, "{num}h"),
             #[cfg(feature = "naga-ext")]
-            LiteralExpression::I64(num) => write!(f, "{num}li"),
+            LiteralExpression::I64(num) => write!(w, "{num}li"),
             #[cfg(feature = "naga-ext")]
-            LiteralExpression::U64(num) => write!(f, "{num}lu"),
+            LiteralExpression::U64(num) => write!(w, "{num}lu"),
             #[cfg(feature = "naga-ext")]
-            LiteralExpression::F64(num) => write!(f, "{num}lf"),
+            LiteralExpression::F64(num) => write!(w, "{num}lf"),
         }
     }
 }
 
-impl Display for ParenthesizedExpression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let expr = &self.expression;
-        write!(f, "({expr})")
+impl Print for ParenthesizedExpression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.write_str("(")?;
+        w.print(&self.expression)?;
+        w.write_str(")")
     }
 }
 
-impl Display for NamedComponentExpression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let base = &self.base;
-        let component = &self.component;
-        write!(f, "{base}.{component}")
+impl Print for NamedComponentExpression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.print(&self.base)?;
+        w.write_str(".")?;
+        w.print(&self.component)
     }
 }
 
-impl Display for IndexingExpression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let base = &self.base;
-        let index = &self.index;
-        write!(f, "{base}[{index}]")
+impl Print for IndexingExpression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.print(&self.base)?;
+        w.write_str("[")?;
+        w.print(&self.index)?;
+        w.write_str("]")
     }
 }
 
-impl Display for UnaryExpression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let operator = &self.operator;
-        let operand = &self.operand;
-        write!(f, "{operator}{operand}")
+impl Print for UnaryExpression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        write!(w, "{}", self.operator)?;
+        w.print(&self.operand)
     }
 }
 
-impl Display for BinaryExpression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let operator = &self.operator;
-        let left = &self.left;
-        let right = &self.right;
-        write!(f, "{left} {operator} {right}")
+impl Print for BinaryExpression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.print(&self.left)?;
+        write!(w, " {} ", self.operator)?;
+        w.print(&self.right)
     }
 }
 
-impl Display for FunctionCall {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let ty = &self.ty;
-        let args = self.arguments.iter().format(", ");
-        write!(f, "{ty}({args})")
+impl Print for FunctionCall {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.print(&self.ty)?;
+        w.write_str("(")?;
+        w.join(&self.arguments, ", ")?;
+        w.write_str(")")
     }
 }
 
-impl Display for TypeExpression {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for TypeExpression {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         if let Some(path) = &self.path {
-            write!(f, "{path}::")?;
+            w.print(path)?;
+            w.write_str("::")?;
         }
-
-        let name = &self.ident;
-        let tplt = fmt_template(&self.template_args);
-        write!(f, "{name}{tplt}")
-    }
-}
-
-impl Display for TemplateArg {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let expr = &self.expression;
-        write!(f, "{expr}")
-    }
-}
-
-fn fmt_template(tplt: &Option<Vec<TemplateArg>>) -> impl fmt::Display + '_ {
-    tplt.iter().format_with("", |tplt, f| {
-        f(&format_args!("<{}>", tplt.iter().format(", ")))
-    })
-}
-
-impl Display for Statement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Statement::Void => write!(f, ";"),
-            Statement::Compound(print) => write!(f, "{print}"),
-            Statement::Assignment(print) => write!(f, "{print}"),
-            Statement::Increment(print) => write!(f, "{print}"),
-            Statement::Decrement(print) => write!(f, "{print}"),
-            Statement::If(print) => write!(f, "{print}"),
-            Statement::Switch(print) => write!(f, "{print}"),
-            Statement::Loop(print) => write!(f, "{print}"),
-            Statement::For(print) => write!(f, "{print}"),
-            Statement::While(print) => write!(f, "{print}"),
-            Statement::Break(print) => write!(f, "{print}"),
-            Statement::Continue(print) => write!(f, "{print}"),
-            Statement::Return(print) => write!(f, "{print}"),
-            Statement::Discard(print) => write!(f, "{print}"),
-            Statement::FunctionCall(print) => write!(f, "{print}"),
-            Statement::ConstAssert(print) => write!(f, "{print}"),
-            Statement::Declaration(print) => write!(f, "{print}"),
-        }
-    }
-}
-
-impl Display for CompoundStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let stmts = Indent(
-            self.statements
-                .iter()
-                .filter(|stmt| !matches!(stmt.node(), Statement::Void))
-                .format("\n"),
-        );
-        write!(f, "{{\n{stmts}\n}}")
-    }
-}
-
-impl Display for AssignmentStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let operator = &self.operator;
-        let lhs = &self.lhs;
-        let rhs = &self.rhs;
-        write!(f, "{lhs} {operator} {rhs};")
-    }
-}
-
-impl Display for IncrementStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let expr = &self.expression;
-        write!(f, "{expr}++;")
-    }
-}
-
-impl Display for DecrementStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let expr = &self.expression;
-        write!(f, "{expr}--;")
-    }
-}
-
-impl Display for IfStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let if_clause = &self.if_clause;
-        write!(f, "{if_clause}")?;
-        for else_if_clause in self.else_if_clauses.iter() {
-            write!(f, "\n{else_if_clause}")?;
-        }
-        if let Some(else_clause) = &self.else_clause {
-            write!(f, "\n{else_clause}")?;
+        w.print(&self.ident)?;
+        if let Some(template_args) = &self.template_args {
+            w.write_str("<")?;
+            w.join(template_args, ", ")?;
+            w.write_str(">")?;
         }
         Ok(())
     }
 }
 
-impl Display for IfClause {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let expr = &self.expression;
-        let stmt = &self.body;
-        write!(f, "if {expr} {stmt}")
+impl Print for TemplateArg {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.print(&self.expression)
     }
 }
 
-impl Display for ElseIfClause {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let expr = &self.expression;
-        let stmt = &self.body;
-        write!(f, "else if {expr} {stmt}")
-    }
-}
-
-impl Display for ElseClause {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let stmt = &self.body;
-        write!(f, "else {stmt}")
-    }
-}
-
-impl Display for SwitchStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let expr = &self.expression;
-        let body_attrs = fmt_attrs(&self.body_attributes, false);
-        let clauses = Indent(self.clauses.iter().format("\n"));
-        write!(f, "switch {expr} {body_attrs}{{\n{clauses}\n}}")
-    }
-}
-
-impl Display for SwitchClause {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let cases = self.case_selectors.iter().format(", ");
-        let body = &self.body;
-        write!(f, "case {cases} {body}")
-    }
-}
-
-impl Display for CaseSelector {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+impl Print for Statement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
         match self {
-            CaseSelector::Default => write!(f, "default"),
-            CaseSelector::Expression(expr) => {
-                write!(f, "{expr}")
-            }
+            Statement::Void => w.write_str(";"),
+            Statement::Compound(print) => w.print(print),
+            Statement::Assignment(print) => w.print(print),
+            Statement::Increment(print) => w.print(print),
+            Statement::Decrement(print) => w.print(print),
+            Statement::If(print) => w.print(print),
+            Statement::Switch(print) => w.print(print),
+            Statement::Loop(print) => w.print(print),
+            Statement::For(print) => w.print(print),
+            Statement::While(print) => w.print(print),
+            Statement::Break(print) => w.print(print),
+            Statement::Continue(print) => w.print(print),
+            Statement::Return(print) => w.print(print),
+            Statement::Discard(print) => w.print(print),
+            Statement::FunctionCall(print) => w.print(print),
+            Statement::ConstAssert(print) => w.print(print),
+            Statement::Declaration(print) => w.print(print),
         }
     }
 }
 
-impl Display for LoopStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let body_attrs = fmt_attrs(&self.body.attributes, false);
-        let stmts = Indent(
-            self.body
-                .statements
-                .iter()
-                .filter(|stmt| !matches!(stmt.node(), Statement::Void))
-                .format("\n"),
-        );
-        let continuing = self
-            .continuing
-            .iter()
-            .format_with("", |cont, f| f(&format_args!("{}\n", Indent(cont))));
-        write!(f, "loop {body_attrs}{{\n{stmts}\n{continuing}}}")
+/// Prints the statements of a block, one per line, skipping empty statements.
+fn print_statements(w: &mut SyntaxWriter<'_>, statements: &[StatementNode]) -> fmt::Result {
+    let statements = statements
+        .iter()
+        .filter(|stmt| !matches!(stmt.node(), Statement::Void));
+    w.join(statements, "\n")
+}
+
+impl Print for CompoundStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("{\n")?;
+        w.indented(|w| print_statements(w, &self.statements))?;
+        w.write_str("\n}")
     }
 }
 
-impl Display for ContinuingStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let body_attrs = fmt_attrs(&self.body.attributes, false);
-        let stmts = Indent(
-            self.body
-                .statements
-                .iter()
-                .filter(|stmt| !matches!(stmt.node(), Statement::Void))
-                .format("\n"),
-        );
-        let break_if = self
-            .break_if
-            .iter()
-            .format_with("", |stmt, f| f(&format_args!("{}\n", Indent(stmt))));
-        write!(f, "continuing {body_attrs}{{\n{stmts}\n{break_if}}}")
+impl Print for AssignmentStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.print(&self.lhs)?;
+        write!(w, " {} ", self.operator)?;
+        w.print(&self.rhs)?;
+        w.write_str(";")
     }
 }
 
-impl Display for BreakIfStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let expr = &self.expression;
-        write!(f, "break if {expr};")
+impl Print for IncrementStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.print(&self.expression)?;
+        w.write_str("++;")
     }
 }
 
-impl Display for ForStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let mut init = self
-            .initializer
-            .as_ref()
-            .map(|stmt| format!("{stmt}"))
-            .unwrap_or_default();
-        if init.ends_with(';') {
-            init.pop();
+impl Print for DecrementStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.print(&self.expression)?;
+        w.write_str("--;")
+    }
+}
+
+impl Print for IfStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.print(&self.if_clause)?;
+        for else_if_clause in &self.else_if_clauses {
+            w.write_str("\n")?;
+            w.print(else_if_clause)?;
         }
-        let cond = self
-            .condition
-            .iter()
-            .format_with("", |expr, f| f(&format_args!("{expr}")));
-        let mut updt = self
-            .update
-            .as_ref()
-            .map(|stmt| format!("{stmt}"))
-            .unwrap_or_default();
-        if updt.ends_with(';') {
-            updt.pop();
+        if let Some(else_clause) = &self.else_clause {
+            w.write_str("\n")?;
+            w.print(else_clause)?;
         }
-        let body = &self.body;
-        write!(f, "for ({init}; {cond}; {updt}) {body}")
+        Ok(())
     }
 }
 
-impl Display for WhileStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let cond = &self.condition;
-        let body = &self.body;
-        write!(f, "while {cond} {body}")
+impl Print for IfClause {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        w.write_str("if ")?;
+        w.print(&self.expression)?;
+        w.write_str(" ")?;
+        w.print(&self.body)
     }
 }
 
-impl Display for BreakStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        write!(f, "break;")
+impl Print for ElseIfClause {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("else if ")?;
+        w.print(&self.expression)?;
+        w.write_str(" ")?;
+        w.print(&self.body)
     }
 }
 
-impl Display for ContinueStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        write!(f, "continue;")
+impl Print for ElseClause {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("else ")?;
+        w.print(&self.body)
     }
 }
 
-impl Display for ReturnStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let expr = self
-            .expression
-            .iter()
-            .format_with("", |expr, f| f(&format_args!(" {expr}")));
-        write!(f, "return{expr};")
+impl Print for SwitchStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("switch ")?;
+        w.print(&self.expression)?;
+        w.write_str(" ")?;
+        print_attributes(w, &self.body_attributes, false)?;
+        w.write_str("{\n")?;
+        w.indented(|w| w.join(&self.clauses, "\n"))?;
+        w.write_str("\n}")
     }
 }
 
-impl Display for DiscardStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        write!(f, "discard;")
+impl Print for SwitchClause {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("case ")?;
+        w.join(&self.case_selectors, ", ")?;
+        w.write_str(" ")?;
+        w.print(&self.body)
     }
 }
 
-impl Display for FunctionCallStatement {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", fmt_attrs(&self.attributes, false))?;
-        let call = &self.call;
-        write!(f, "{call};")
+impl Print for CaseSelector {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        match self {
+            CaseSelector::Default => w.write_str("default"),
+            CaseSelector::Expression(expr) => w.print(expr),
+        }
     }
 }
+
+impl Print for LoopStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("loop ")?;
+        print_attributes(w, &self.body.attributes, false)?;
+        w.write_str("{\n")?;
+        w.indented(|w| print_statements(w, &self.body.statements))?;
+        w.write_str("\n")?;
+        if let Some(continuing) = &self.continuing {
+            w.indented(|w| w.print(continuing))?;
+            w.write_str("\n")?;
+        }
+        w.write_str("}")
+    }
+}
+
+impl Print for ContinuingStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("continuing ")?;
+        print_attributes(w, &self.body.attributes, false)?;
+        w.write_str("{\n")?;
+        w.indented(|w| print_statements(w, &self.body.statements))?;
+        w.write_str("\n")?;
+        if let Some(break_if) = &self.break_if {
+            w.indented(|w| w.print(break_if))?;
+            w.write_str("\n")?;
+        }
+        w.write_str("}")
+    }
+}
+
+impl Print for BreakIfStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("break if ")?;
+        w.print(&self.expression)?;
+        w.write_str(";")
+    }
+}
+
+impl Print for ForStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("for (")?;
+        if let Some(initializer) = &self.initializer {
+            w.without_trailing_semicolon(|w| w.print(initializer))?;
+        }
+        w.write_str("; ")?;
+        if let Some(condition) = &self.condition {
+            w.print(condition)?;
+        }
+        w.write_str("; ")?;
+        if let Some(update) = &self.update {
+            w.without_trailing_semicolon(|w| w.print(update))?;
+        }
+        w.write_str(") ")?;
+        w.print(&self.body)
+    }
+}
+
+impl Print for WhileStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("while ")?;
+        w.print(&self.condition)?;
+        w.write_str(" ")?;
+        w.print(&self.body)
+    }
+}
+
+impl Print for BreakStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("break;")
+    }
+}
+
+impl Print for ContinueStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("continue;")
+    }
+}
+
+impl Print for ReturnStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("return")?;
+        if let Some(expression) = &self.expression {
+            w.write_str(" ")?;
+            w.print(expression)?;
+        }
+        w.write_str(";")
+    }
+}
+
+impl Print for DiscardStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.write_str("discard;")
+    }
+}
+
+impl Print for FunctionCallStatement {
+    fn print(&self, w: &mut SyntaxWriter<'_>) -> fmt::Result {
+        print_attributes(w, &self.attributes, false)?;
+        w.print(&self.call)?;
+        w.write_str(";")
+    }
+}
+
+impl_display!(
+    TranslationUnit,
+    Ident,
+    Visibility,
+    ImportStatement,
+    ModulePath,
+    Import,
+    ImportContent,
+    GlobalDirective,
+    DiagnosticDirective,
+    EnableDirective,
+    RequiresDirective,
+    GlobalDeclaration,
+    Declaration,
+    DeclarationKind,
+    TypeAlias,
+    Struct,
+    StructMember,
+    Function,
+    FormalParameter,
+    ConstAssert,
+    CompoundGlobalDeclaration,
+    Attribute,
+    Expression,
+    LiteralExpression,
+    ParenthesizedExpression,
+    NamedComponentExpression,
+    IndexingExpression,
+    UnaryExpression,
+    BinaryExpression,
+    FunctionCall,
+    TypeExpression,
+    TemplateArg,
+    Statement,
+    CompoundStatement,
+    AssignmentStatement,
+    IncrementStatement,
+    DecrementStatement,
+    IfStatement,
+    IfClause,
+    ElseIfClause,
+    ElseClause,
+    SwitchStatement,
+    SwitchClause,
+    CaseSelector,
+    LoopStatement,
+    ContinuingStatement,
+    BreakIfStatement,
+    ForStatement,
+    WhileStatement,
+    BreakStatement,
+    ContinueStatement,
+    ReturnStatement,
+    DiscardStatement,
+    FunctionCallStatement,
+);
+
+#[cfg(feature = "generics")]
+impl_display!(TypeConstraint);
 
 #[cfg(test)]
 mod test {

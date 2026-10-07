@@ -17,6 +17,7 @@ pub mod package;
 pub mod pass;
 pub mod resolver;
 pub mod source_map;
+mod spanmap;
 pub mod toml_cfg;
 
 pub use crate::{
