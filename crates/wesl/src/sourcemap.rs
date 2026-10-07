@@ -58,6 +58,10 @@ impl BasicSourceMap {
     pub fn add_item(&mut self, decl: String, entry: SourceMapEntry) {
         self.mappings.insert(decl, entry);
     }
+    /// Iterate over all recorded mangled names and the declaration they come from.
+    pub fn items(&self) -> impl Iterator<Item = (&str, &SourceMapEntry)> {
+        self.mappings.iter().map(|(k, v)| (k.as_str(), v))
+    }
     pub fn file(&self, path: &ModulePath) -> Option<&SourceMapFile> {
         self.sources.get(path)
     }
