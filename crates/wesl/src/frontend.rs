@@ -237,12 +237,15 @@ pub fn compile(
     if options.sourcemap {
         let sourcemapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
         let mut pass = CompilationPass::new(main_path, options, &sourcemapper, &sourcemapper);
-        let res = CompilerDriver::compile(&mut pass);
-        let sourcemap = sourcemapper.finish();
-        let res = res.map_err(|e| Diagnostic::from(e).with_sourcemap(&sourcemap))?;
-        let wgsl = res.syntax.to_string().into();
-
-        Ok(CompileResult::new(res, Some(sourcemap), wgsl))
+        match CompilerDriver::compile(&mut pass) {
+            Ok(res) => {
+                let (sourcemap, wgsl) = sourcemapper.finish_with_output(&res.syntax, &res.modules);
+                Ok(CompileResult::new(res, Some(sourcemap), wgsl))
+            }
+            Err(e) => Err(Diagnostic::from(e)
+                .with_sourcemap(&sourcemapper.finish())
+                .into()),
+        }
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
         let res = CompilerDriver::compile(&mut pass)?;
@@ -262,12 +265,15 @@ pub async fn compile_async(
     if options.sourcemap {
         let sourcemapper = SourceMapper::new(main_path.clone(), &resolver, &mangler);
         let mut pass = CompilationPass::new(main_path, options, &sourcemapper, &sourcemapper);
-        let res = CompilerDriver::compile_async(&mut pass).await;
-        let sourcemap = sourcemapper.finish();
-        let res = res.map_err(|e| Diagnostic::from(e).with_sourcemap(&sourcemap))?;
-        let wgsl = res.syntax.to_string().into();
-
-        Ok(CompileResult::new(res, Some(sourcemap), wgsl))
+        match CompilerDriver::compile_async(&mut pass).await {
+            Ok(res) => {
+                let (sourcemap, wgsl) = sourcemapper.finish_with_output(&res.syntax, &res.modules);
+                Ok(CompileResult::new(res, Some(sourcemap), wgsl))
+            }
+            Err(e) => Err(Diagnostic::from(e)
+                .with_sourcemap(&sourcemapper.finish())
+                .into()),
+        }
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
         let res = CompilerDriver::compile_async(&mut pass).await?;
