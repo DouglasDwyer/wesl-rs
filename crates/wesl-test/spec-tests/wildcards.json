@@ -1,0 +1,401 @@
+[
+	{
+		"name": "wildcard-import",
+		"desc": "a wildcard import brings the visible items of a module in scope",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = x + z;",
+		"modules": {
+			"package::m1": "const x: u32 = 3; const z: u32 = 4; const unused: u32 = 5;"
+		},
+		"expect": "pass",
+		"result": "const package_m1_x: u32 = 3; const package_m1_z: u32 = 4; const y = package_m1_x + package_m1_z;"
+	},
+	{
+		"name": "wildcard-import-relative",
+		"desc": "a wildcard import can use a relative path",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = x;",
+		"modules": {
+			"package::m1": "import super::m2::*; const x = w;",
+			"package::m2": "const w: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const package_m2_w: u32 = 3; const package_m1_x = package_m2_w; const y = package_m1_x;"
+	},
+	{
+		"name": "wildcard-import-private-decl",
+		"desc": "a wildcard import omits private declarations",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = x;",
+		"modules": {
+			"package::m1": "private const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-package-decl-cross-package",
+		"desc": "a wildcard import from another package omits non-public declarations",
+		"kind": "modules",
+		"code": "import foo::m1::*; const y = x;",
+		"modules": {
+			"foo::m1": "@!wildcardable; const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-submodule-contents",
+		"desc": "a wildcard import does not bring in the contents of submodules",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = x;",
+		"modules": {
+			"package::m1": "const w: u32 = 1;",
+			"package::m1::m2": "const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-submodule-names",
+		"desc": "a wildcard import does not bring in submodule names",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = m2::x;",
+		"modules": {
+			"package::m1": "const w: u32 = 1;",
+			"package::m1::m2": "const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-collection",
+		"desc": "a wildcard can be a member of an import collection",
+		"kind": "modules",
+		"code": "import package::{m1::x, m2::*}; const y = x + z;",
+		"modules": {
+			"package::m1": "const x: u32 = 3;",
+			"package::m2": "const z: u32 = 4;"
+		},
+		"expect": "pass",
+		"result": "const package_m1_x: u32 = 3; const package_m2_z: u32 = 4; const y = package_m1_x + package_m2_z;"
+	},
+	{
+		"name": "wildcard-import-collection-sibling-branch",
+		"desc": "a sibling branch of a collection does not widen the wildcard",
+		"kind": "modules",
+		"code": "import package::m1::{m2::w, *}; const y = x;",
+		"modules": {
+			"package::m1": "const v: u32 = 1;",
+			"package::m1::m2": "const w: u32 = 2; const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-reexport",
+		"desc": "a wildcard import brings in public re-exports",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = a;",
+		"modules": {
+			"package::m1": "public import package::m2::x as a;",
+			"package::m2": "public const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const package_m2_x: u32 = 3; const y = package_m2_x;"
+	},
+	{
+		"name": "wildcard-import-bare-import-not-exported",
+		"desc": "a wildcard import does not bring in the bare imports of a module",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = x;",
+		"modules": {
+			"package::m1": "import package::m2::x;",
+			"package::m2": "const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-wildcard-not-exported",
+		"desc": "a wildcard import does not bring in the wildcard imports of a module",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = x;",
+		"modules": {
+			"package::m1": "import package::m2::*;",
+			"package::m2": "const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-shadowed-by-declaration",
+		"desc": "a local declaration takes precedence over a wildcard import",
+		"kind": "modules",
+		"code": "import package::m1::*; const x: f32 = 1.0; const y = x;",
+		"modules": {
+			"package::m1": "const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const x: f32 = 1.0; const y = x;"
+	},
+	{
+		"name": "wildcard-import-shadowed-by-named-import",
+		"desc": "a named import takes precedence over a wildcard import",
+		"kind": "modules",
+		"code": "import package::m1::x; import package::m2::*; const y = x;",
+		"modules": {
+			"package::m1": "const x: u32 = 3;",
+			"package::m2": "const x: f32 = 1.0;"
+		},
+		"expect": "pass",
+		"result": "const package_m1_x: u32 = 3; const y = package_m1_x;"
+	},
+	{
+		"name": "wildcard-import-shadowed-by-local",
+		"desc": "a function-local declaration takes precedence over a wildcard import",
+		"kind": "modules",
+		"code": "import package::m1::*; fn f() -> u32 { let x = 1u; return x; }",
+		"modules": {
+			"package::m1": "const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "fn f() -> u32 { let x = 1u; return x; }"
+	},
+	{
+		"name": "wildcard-import-shadows-builtin",
+		"desc": "a wildcard imported name takes precedence over a WGSL built-in",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = clamp(1.0);",
+		"modules": {
+			"package::m1": "fn clamp(x: f32) -> f32 { return x; }"
+		},
+		"expect": "pass",
+		"result": "fn package_m1_clamp(x: f32) -> f32 { return x; } const y = package_m1_clamp(1.0);"
+	},
+	{
+		"name": "wildcard-import-builtin-fallback",
+		"desc": "a built-in is used when no wildcard imports the name",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = clamp(1.0, 0.0, 1.0) + x;",
+		"modules": {
+			"package::m1": "const x: f32 = 1.0;"
+		},
+		"expect": "pass",
+		"result": "const package_m1_x: f32 = 1.0; const y = clamp(1.0, 0.0, 1.0) + package_m1_x;"
+	},
+	{
+		"name": "wildcard-import-ambiguous",
+		"desc": "two wildcards providing different declarations of a referenced name is an error",
+		"kind": "modules",
+		"code": "import package::m1::*; import package::m2::*; const y = x;",
+		"modules": {
+			"package::m1": "const x: u32 = 3;",
+			"package::m2": "const x: u32 = 4;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-ambiguous-unreferenced",
+		"desc": "a name provided by two wildcards is only an error where it is referenced",
+		"kind": "modules",
+		"code": "import package::m1::*; import package::m2::*; const y = z;",
+		"modules": {
+			"package::m1": "const x: u32 = 3; const z: u32 = 1;",
+			"package::m2": "const x: u32 = 4;"
+		},
+		"expect": "pass",
+		"result": "const package_m1_z: u32 = 1; const y = package_m1_z;"
+	},
+	{
+		"name": "wildcard-import-ambiguous-same-declaration",
+		"desc": "two wildcards providing the same declaration is not ambiguous",
+		"kind": "modules",
+		"code": "import package::m1::*; import package::m2::*; const y = x;",
+		"modules": {
+			"package::m1": "public import package::m3::x;",
+			"package::m2": "public import package::m3::x;",
+			"package::m3": "public const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const package_m3_x: u32 = 3; const y = package_m3_x;"
+	},
+	{
+		"name": "wildcard-import-ambiguous-named-import",
+		"desc": "a named import resolves an ambiguity between wildcards",
+		"kind": "modules",
+		"code": "import package::m1::*; import package::m2::{x, *}; const y = x;",
+		"modules": {
+			"package::m1": "const x: u32 = 3;",
+			"package::m2": "const x: u32 = 4;"
+		},
+		"expect": "pass",
+		"result": "const package_m2_x: u32 = 4; const y = package_m2_x;"
+	},
+	{
+		"name": "wildcard-import-ambiguous-inline-path",
+		"desc": "an inline path resolves an ambiguity between wildcards",
+		"kind": "modules",
+		"code": "import package::m1::*; import package::m2::*; const y = package::m2::x;",
+		"modules": {
+			"package::m1": "const x: u32 = 3;",
+			"package::m2": "const x: u32 = 4;"
+		},
+		"expect": "pass",
+		"result": "const package_m2_x: u32 = 4; const y = package_m2_x;"
+	},
+	{
+		"name": "wildcard-import-external-wildcardable",
+		"desc": "a wildcard import from an external module marked wildcardable",
+		"kind": "modules",
+		"code": "import foo::m1::*; const y = x;",
+		"modules": {
+			"foo::m1": "@!wildcardable; public const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const foo_m1_x: u32 = 3; const y = foo_m1_x;"
+	},
+	{
+		"name": "wildcard-import-external-unsupported",
+		"desc": "a wildcard import from an external module not marked wildcardable is an error",
+		"kind": "modules",
+		"code": "import foo::m1::*; const y = x;",
+		"modules": {
+			"foo::m1": "public const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-external-unsupported-suppressed",
+		"desc": "unsupported_wildcard can be suppressed on the import",
+		"kind": "modules",
+		"code": "@diagnostic(off, unsupported_wildcard) import foo::m1::*; const y = x;",
+		"modules": {
+			"foo::m1": "public const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const foo_m1_x: u32 = 3; const y = foo_m1_x;"
+	},
+	{
+		"name": "wildcard-import-external-unsupported-suppressed-module",
+		"desc": "unsupported_wildcard can be suppressed for the module",
+		"kind": "modules",
+		"code": "import foo::m1::*; diagnostic(off, unsupported_wildcard); const y = x;",
+		"modules": {
+			"foo::m1": "public const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const foo_m1_x: u32 = 3; const y = foo_m1_x;"
+	},
+	{
+		"name": "wildcard-import-cross-package-in-library",
+		"desc": "a cross-package wildcard import in library code is an error",
+		"kind": "modules",
+		"code": "import foo::m1::f; const y = f();",
+		"modules": {
+			"foo::m1": "import bar::m2::*; public fn f() -> u32 { return x; }",
+			"foo/bar::m2": "@!wildcardable; public const x: u32 = 3;"
+		},
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-cross-package-in-library-suppressed",
+		"desc": "cross_package_wildcard can be suppressed on the import",
+		"kind": "modules",
+		"code": "import foo::m1::f; const y = f();",
+		"modules": {
+			"foo::m1": "@diagnostic(off, cross_package_wildcard) import bar::m2::*; public fn f() -> u32 { return x; }",
+			"foo/bar::m2": "@!wildcardable; public const x: u32 = 3;"
+		},
+		"expect": "pass",
+		"result": "const import_2_foo_bar_m2_x: u32 = 3; fn foo_m1_f() -> u32 { return import_2_foo_bar_m2_x; } const y = foo_m1_f();"
+	},
+	{
+		"name": "wildcard-import-missing-module",
+		"desc": "a wildcard import of a module that does not exist is an error",
+		"kind": "modules",
+		"code": "import package::m1::*; const y = 1;",
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-import-conditional",
+		"desc": "a wildcard import removed by conditional translation is not resolved",
+		"kind": "modules",
+		"code": "@if(false) import package::m1::*; const y = 1;",
+		"expect": "pass",
+		"result": "const y = 1;"
+	},
+	{
+		"name": "wildcard-syntax-path",
+		"desc": "a wildcard follows a module path",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "import package::m1::*; import super::m2::m3::*; import foo::*;",
+		"expect": "pass"
+	},
+	{
+		"name": "wildcard-syntax-collection",
+		"desc": "a wildcard can be a member of a collection",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "import foo::{a::b, *}; import {foo::*}; import foo::{a::*, c as d};",
+		"expect": "pass"
+	},
+	{
+		"name": "wildcard-syntax-bare",
+		"desc": "a bare wildcard is an error",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "import *;",
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-syntax-bare-collection",
+		"desc": "a bare wildcard in a collection is an error",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "import {*};",
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-syntax-rename",
+		"desc": "a wildcard cannot be renamed",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "import foo::* as bar;",
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-syntax-public",
+		"desc": "public import with a wildcard is reserved",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "public import foo::*;",
+		"expect": "fail"
+	},
+	{
+		"name": "wildcard-syntax-public-collection",
+		"desc": "public import with a wildcard in a collection is reserved",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "public import foo::{a, *};",
+		"expect": "fail"
+	},
+	{
+		"name": "module-attribute-syntax",
+		"desc": "module attributes follow imports and precede declarations",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "import foo::*; @!wildcardable; @!reserved(1, 2); const x = 1;",
+		"expect": "pass"
+	},
+	{
+		"name": "module-attribute-after-declaration",
+		"desc": "module attributes cannot follow declarations",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "const x = 1; @!wildcardable;",
+		"expect": "fail"
+	},
+	{
+		"name": "module-attribute-unterminated",
+		"desc": "module attributes end with a semicolon",
+		"kind": "syntax",
+		"syntax": "declaration",
+		"code": "@!wildcardable const x = 1;",
+		"expect": "fail"
+	}
+]

@@ -170,4 +170,93 @@ mod test {
         expect_err::<Statement>("@if(true) (*x) += 1;");
         expect_ok::<Statement>("x::y = 1;");
     }
+
+    #[test]
+    fn wildcard_imports() {
+        expect_ok::<ImportStatement>("import foo::*;");
+        expect_ok::<ImportStatement>("import foo::bar::*;");
+        expect_ok::<ImportStatement>("import package::*;");
+        expect_ok::<ImportStatement>("import super::*;");
+        expect_ok::<ImportStatement>("import foo::{a::b, *};");
+        expect_ok::<ImportStatement>("import foo::{a::*, b as c};");
+        expect_ok::<ImportStatement>("import {foo::*};");
+        expect_ok::<ImportStatement>("@if(true) import foo::*;");
+        expect_ok::<ImportStatement>("@diagnostic(off, wildcard_shadow) import foo::*;");
+        expect_err::<ImportStatement>("import *;");
+        expect_err::<ImportStatement>("import {*};");
+        expect_err::<ImportStatement>("import {a, *};");
+        expect_err::<ImportStatement>("import foo::* as bar;");
+        expect_err::<ImportStatement>("import foo::**;");
+    }
+
+    #[test]
+    fn public_wildcard_imports_are_reserved() {
+        expect_ok::<ImportStatement>("public import foo::bar;");
+        expect_err::<ImportStatement>("public import foo::*;");
+        expect_err::<ImportStatement>("public import foo::{bar, *};");
+        expect_err::<ImportStatement>("public import foo::{bar::*};");
+    }
+
+    #[test]
+    fn wildcard_import_structure() {
+        let stmt = ImportStatement::from_str("import foo::{a::b, *};").unwrap();
+        let ImportContent::Collection(coll) = stmt.content else {
+            panic!("expected a collection");
+        };
+        assert_eq!(coll.len(), 2);
+        assert!(coll[0].content.is_item());
+        assert_eq!(coll[0].path, vec!["a".to_string()]);
+        assert!(coll[1].content.is_wildcard());
+        assert!(coll[1].path.is_empty());
+
+        let stmt = ImportStatement::from_str("import foo::bar::*;").unwrap();
+        assert!(stmt.content.is_wildcard());
+        assert_eq!(stmt.path.unwrap().components, vec!["bar".to_string()]);
+    }
+
+    #[test]
+    fn wildcard_imports_display() {
+        for source in [
+            "import foo::*;",
+            "import foo::bar::*;",
+            "import foo::{ a::b, * };",
+        ] {
+            let stmt = ImportStatement::from_str(source).unwrap();
+            assert_eq!(stmt.to_string(), source);
+        }
+    }
+
+    #[test]
+    fn module_attributes() {
+        expect_ok::<GlobalDirective>("@!wildcardable;");
+        expect_ok::<GlobalDirective>("@!other(1, foo);");
+        expect_ok::<GlobalDirective>("@if(true) @!wildcardable;");
+        expect_err::<GlobalDirective>("@!wildcardable");
+        expect_err::<GlobalDirective>("@! wildcardable extra;");
+        expect_err::<GlobalDirective>("@!;");
+
+        let unit = TranslationUnit::from_str(
+            "import foo::*; @!wildcardable; enable f16; @!other(1); fn f() {}",
+        )
+        .unwrap();
+        assert_eq!(unit.global_directives.len(), 3);
+        assert!(unit.global_directives[0].is_module_attribute());
+        assert!(unit.global_directives[1].is_enable());
+        assert!(unit.global_directives[2].is_module_attribute());
+    }
+
+    #[test]
+    fn module_attributes_display() {
+        for source in ["@!wildcardable;", "@!other(1, foo);"] {
+            let directive = GlobalDirective::from_str(source).unwrap();
+            assert_eq!(directive.to_string(), source);
+        }
+    }
+
+    #[test]
+    fn attributes_are_not_module_attributes() {
+        expect_ok::<Statement>("@if(true) x = 1;");
+        expect_err::<Statement>("@!wildcardable x = 1;");
+        expect_err::<GlobalDeclaration>("@!wildcardable fn f() {}");
+    }
 }
