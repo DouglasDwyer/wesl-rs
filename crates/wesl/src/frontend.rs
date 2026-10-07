@@ -5,6 +5,7 @@
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use wesl_core::StaticPackage;
@@ -69,6 +70,10 @@ pub struct CompileOptions {
     pub validate: bool,
     /// Enable sourcemapping, which provides better error diagnostics.
     pub sourcemap: bool,
+    /// Sort the declarations of the output with [`TranslationUnit::sort_declarations`].
+    ///
+    /// This makes the output independent of the order in which modules were linked.
+    pub sort_declarations: bool,
     /// Declaration name mangling scheme.
     pub mangler: ManglerKind,
     /// Enable mangling of declarations in the main module.
@@ -143,6 +148,7 @@ impl Default for CompileOptions {
             lower: false,
             validate: true,
             sourcemap: true,
+            sort_declarations: false,
             mangler: Default::default(),
             mangle_main: false,
             keep: Default::default(),
@@ -235,21 +241,11 @@ pub fn compile(
         let sourcemap = sourcemapper.finish();
         let res = res.map_err(|e| Diagnostic::from(e).with_sourcemap(&sourcemap))?;
 
-        Ok(CompileResult {
-            syntax: res.syntax,
-            modules: res.modules,
-            sourcemap: Some(sourcemap),
-            used_items: res.used_items,
-        })
+        Ok(CompileResult::new(res, Some(sourcemap)))
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
         let res = CompilerDriver::compile(&mut pass)?;
-        Ok(CompileResult {
-            syntax: res.syntax,
-            modules: res.modules,
-            sourcemap: None,
-            used_items: res.used_items,
-        })
+        Ok(CompileResult::new(res, None))
     }
 }
 
@@ -268,21 +264,11 @@ pub async fn compile_async(
         let sourcemap = sourcemapper.finish();
         let res = res.map_err(|e| Diagnostic::from(e).with_sourcemap(&sourcemap))?;
 
-        Ok(CompileResult {
-            syntax: res.syntax,
-            modules: res.modules,
-            sourcemap: Some(sourcemap),
-            used_items: res.used_items,
-        })
+        Ok(CompileResult::new(res, Some(sourcemap)))
     } else {
         let mut pass = CompilationPass::new(main_path, options, &resolver, &mangler);
         let res = CompilerDriver::compile_async(&mut pass).await?;
-        Ok(CompileResult {
-            syntax: res.syntax,
-            modules: res.modules,
-            sourcemap: None,
-            used_items: res.used_items,
-        })
+        Ok(CompileResult::new(res, None))
     }
 }
 
@@ -464,17 +450,54 @@ impl<R: Resolver> Compiler<R> {
 /// It implements [`std::fmt::Display`], call `to_string()` to get the compiled WGSL.
 #[derive(Default, Clone)]
 pub struct CompileResult {
-    /// The syntax tree of the resulting
-    pub syntax: TranslationUnit,
-    pub modules: Vec<Module>,
-    pub sourcemap: Option<BasicSourceMap>,
-    pub used_items: UsedItems,
+    modules: Vec<Module>,
+    sourcemap: Option<BasicSourceMap>,
+    syntax: TranslationUnit,
+    used_items: UsedItems,
+    wgsl: Arc<str>,
 }
 
 impl CompileResult {
+    /// The compiled WGSL, printed once when the compilation finished.
+    pub fn wgsl(&self) -> &str {
+        &self.wgsl
+    }
+
+    /// The modules the syntax tree was linked from.
+    pub fn modules(&self) -> &[Module] {
+        &self.modules
+    }
+
+    /// The sourcemap, if [`CompileOptions::sourcemap`] is enabled.
+    pub fn sourcemap(&self) -> Option<&BasicSourceMap> {
+        self.sourcemap.as_ref()
+    }
+
+    /// The syntax tree of the compiled WGSL.
+    pub fn syntax(&self) -> &TranslationUnit {
+        &self.syntax
+    }
+
+    /// The modules and declarations that the compiled WGSL uses.
+    pub fn used_items(&self) -> &UsedItems {
+        &self.used_items
+    }
+
+    /// Creates the result of a compilation, printing the compiled WGSL.
+    fn new(res: pass::CompileResult, sourcemap: Option<BasicSourceMap>) -> Self {
+        let wgsl = res.syntax.to_string().into();
+        Self {
+            modules: res.modules,
+            sourcemap,
+            syntax: res.syntax,
+            used_items: res.used_items,
+            wgsl,
+        }
+    }
+
     /// Write the compiled result to a file.
     pub fn write_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        std::fs::write(path, self.to_string())
+        std::fs::write(path, self.wgsl())
     }
 
     /// Emit `rerun-if-changed` instructions so the build script reruns only if the
@@ -533,7 +556,7 @@ impl CompileResult {
 
 impl std::fmt::Display for CompileResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.syntax.fmt(f)
+        f.write_str(&self.wgsl)
     }
 }
 
@@ -795,6 +818,10 @@ impl CompilerDriver for CompilationPass<'_> {
 
         if self.options.validate {
             pass::validate_wgsl(&module)?;
+        }
+
+        if self.options.sort_declarations {
+            module.sort_declarations();
         }
 
         Ok(module)
