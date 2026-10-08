@@ -12,10 +12,9 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
-annotate-snippets = { version = "0.12.16", default-features = false }
+annotate-snippets = "0.12.16"
 derive_more = {
   version = "2.1.1",
-  default-features = false,
   features = [
     "as_ref",
     "deref",
@@ -37,10 +36,10 @@ lexical-parse-integer = {
   default-features = false,
   features = ["format", "power-of-two", "std"],
 }
-logos = { version = "0.16.1", default-features = false, features = ["export_derive"] }
+logos = "0.16.1"
 pretty = { version = "0.12.5", default-features = false }
-serde = { version = "1.0.229", default-features = false, features = ["derive", "rc", "std"], optional = true }
-thiserror = { version = "2.0.21", default-features = false }
+serde = { version = "1.0.229", features = ["derive", "rc"], optional = true }
+thiserror = "2.0.21"
 tokrepr = { workspace = true, optional = true }
 wgsl-types = { workspace = true }
 

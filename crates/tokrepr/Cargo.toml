@@ -8,8 +8,8 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-proc-macro2 = { version = "1.0.107", default-features = false }
-quote = { version = "1.0.47", default-features = false }
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
 tokrepr-derive = { workspace = true, optional = true }
 
 [features]
