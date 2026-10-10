@@ -239,7 +239,7 @@ mod tests {
         }
     }
 
-    // the `eval` lowering does not inline aliases
+    // this tests `inline_type_aliases`, which is only used without the `eval` feature
     #[cfg(not(feature = "eval"))]
     #[test]
     fn inlined_alias_referencing_later_alias() {
