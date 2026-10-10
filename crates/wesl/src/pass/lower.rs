@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use crate::{error::Error, pass::Visit};
 
-use wgsl_parse::syntax::*;
+use wgsl_parse::{SyntaxNode, syntax::*};
 
 /// Performs conversions on the final syntax tree to make it more compatible with WGSL
 /// implementations like Naga, catch errors early and perform optimizations.
@@ -69,21 +71,14 @@ pub fn lower(module: &mut TranslationUnit) -> Result<(), Error> {
 /// Eliminate all type aliases.
 #[allow(unused)]
 fn inline_type_aliases(wesl: &mut TranslationUnit) {
-    let take_next_alias = |wesl: &mut TranslationUnit| {
-        let index = wesl
-            .global_declarations
-            .iter()
-            .position(|decl| matches!(decl.node(), GlobalDeclaration::TypeAlias(_)));
-        index.map(|index| {
-            let decl = wesl.global_declarations.swap_remove(index);
-            match decl.into_inner() {
-                GlobalDeclaration::TypeAlias(alias) => alias,
-                _ => unreachable!(),
-            }
-        })
-    };
+    let aliases = take_declarations_in_dependency_order(wesl, |decl| {
+        matches!(decl, GlobalDeclaration::TypeAlias(_))
+    });
 
-    while let Some(mut alias) = take_next_alias(wesl) {
+    for alias in aliases {
+        let GlobalDeclaration::TypeAlias(mut alias) = alias else {
+            unreachable!()
+        };
         // we rename the alias and all references to its type expression,
         // and drop the alias declaration.
         alias.ident.rename(format!("{}", alias.ty));
@@ -99,29 +94,161 @@ fn inline_type_aliases(wesl: &mut TranslationUnit) {
 /// panics if the const-declaration is ill-formed, i.e. has no initializer.
 #[allow(unused)]
 fn inline_global_consts(wesl: &mut TranslationUnit) {
-    let take_next_const = |wesl: &mut TranslationUnit| {
-        let index = wesl.global_declarations.iter().position(|decl| {
-            matches!(
-                decl.node(),
-                GlobalDeclaration::Declaration(Declaration {
-                    kind: DeclarationKind::Const,
-                    ..
-                })
-            )
-        });
-        index.map(|index| {
-            let decl = wesl.global_declarations.swap_remove(index);
-            match decl.into_inner() {
-                GlobalDeclaration::Declaration(d) => d,
-                _ => unreachable!(),
-            }
-        })
-    };
+    let consts = take_declarations_in_dependency_order(wesl, |decl| {
+        matches!(
+            decl,
+            GlobalDeclaration::Declaration(Declaration {
+                kind: DeclarationKind::Const,
+                ..
+            })
+        )
+    });
 
-    while let Some(mut decl) = take_next_const(wesl) {
+    for decl in consts {
+        let GlobalDeclaration::Declaration(mut decl) = decl else {
+            unreachable!()
+        };
         // we rename the const and all references to its expression in parentheses,
         // and drop the const declaration.
         decl.ident
             .rename(format!("({})", decl.initializer.unwrap()));
+    }
+}
+
+/// Removes the global declarations matching `filter` from `wesl`, and returns them
+/// ordered such that every declaration comes after the matching declarations it refers to.
+///
+/// Inlining renames a declaration's ident to the text of its definition. That text is
+/// computed from the identifiers *at that moment*, so a declaration must only be inlined
+/// after all the declarations it references have been. Otherwise, the text would contain the
+/// stale name of an item that is about to be removed. The order of declarations in `wesl` is
+/// not enough to guarantee this, because it depends on the order modules were linked.
+///
+/// Ties are broken by the original order of the declarations. If the declarations are
+/// cyclic (which is invalid), the cycle is broken arbitrarily.
+fn take_declarations_in_dependency_order(
+    wesl: &mut TranslationUnit,
+    filter: impl Fn(&GlobalDeclaration) -> bool,
+) -> Vec<GlobalDeclaration> {
+    let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut wesl.global_declarations)
+        .into_iter()
+        .partition(|decl| filter(decl.node()));
+    wesl.global_declarations = kept;
+
+    let taken = taken
+        .into_iter()
+        .map(|decl| decl.into_inner())
+        .collect::<Vec<_>>();
+
+    let index_of = taken
+        .iter()
+        .enumerate()
+        .filter_map(|(index, decl)| Some((decl.ident()?, index)))
+        .collect::<HashMap<Ident, usize>>();
+
+    // for each declaration, the indices of the other declarations it refers to
+    let dependencies = taken
+        .iter()
+        .enumerate()
+        .map(|(index, decl)| {
+            let mut deps = Vec::new();
+            Visit::<TypeExpression>::visit_rec(decl, &mut |ty_expr| {
+                if let Some(&dep) = index_of.get(&ty_expr.ident)
+                    && dep != index
+                {
+                    deps.push(dep);
+                }
+            });
+            deps
+        })
+        .collect::<Vec<_>>();
+
+    // depth-first post-order traversal
+    #[derive(Clone, Copy, PartialEq)]
+    enum State {
+        Unvisited,
+        InProgress,
+        Done,
+    }
+
+    fn visit(
+        index: usize,
+        dependencies: &[Vec<usize>],
+        states: &mut [State],
+        order: &mut Vec<usize>,
+    ) {
+        if states[index] != State::Unvisited {
+            return;
+        }
+        states[index] = State::InProgress;
+        for &dep in &dependencies[index] {
+            visit(dep, dependencies, states, order);
+        }
+        states[index] = State::Done;
+        order.push(index);
+    }
+
+    let mut states = vec![State::Unvisited; taken.len()];
+    let mut order = Vec::with_capacity(taken.len());
+    for index in 0..taken.len() {
+        visit(index, &dependencies, &mut states, &mut order);
+    }
+
+    let mut taken = taken.into_iter().map(Some).collect::<Vec<_>>();
+    order
+        .into_iter()
+        .map(|index| taken[index].take().expect("declaration visited twice"))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lowered(source: &str) -> String {
+        let mut module: TranslationUnit = source.parse().unwrap();
+        // links references to their declarations, like the compiler does after loading a module
+        crate::pass::retarget_idents(&mut module);
+        lower(&mut module).unwrap();
+        module.to_string()
+    }
+
+    #[test]
+    fn inlined_const_referencing_later_const() {
+        // `lower` must not depend on the order of declarations
+        let wgsl = lowered(
+            "const DERIVED: u32 = BASE << 1; const BASE: u32 = 3; fn f() -> u32 { return DERIVED; }",
+        );
+        assert!(
+            !wgsl.contains("BASE"),
+            "stale reference to inlined const: {wgsl}"
+        );
+        assert!(!wgsl.contains("DERIVED"), "const was not inlined: {wgsl}");
+    }
+
+    #[test]
+    fn inlined_const_chain_in_any_order() {
+        let wgsl = lowered(
+            "const C: u32 = B + 1; const B: u32 = A + 1; const A: u32 = 1; fn f() -> u32 { return C; }",
+        );
+        for name in ["A", "B", "C"] {
+            assert!(
+                !wgsl.contains(&format!("{name} ")) && !wgsl.contains(&format!("({name}")),
+                "stale reference to const `{name}`: {wgsl}"
+            );
+        }
+    }
+
+    // the `eval` lowering does not inline aliases
+    #[cfg(not(feature = "eval"))]
+    #[test]
+    fn inlined_alias_referencing_later_alias() {
+        let wgsl = lowered("alias Derived = Base; alias Base = vec3f; var<private> x: Derived;");
+        assert!(
+            !wgsl.contains("Base"),
+            "stale reference to inlined alias: {wgsl}"
+        );
+        assert!(!wgsl.contains("Derived"), "alias was not inlined: {wgsl}");
+        assert!(wgsl.contains("vec3f"), "{wgsl}");
     }
 }
