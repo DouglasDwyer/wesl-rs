@@ -242,6 +242,7 @@ impl From<&WeslCompileOptions> for wesl::CompileOptions {
 
         wesl::CompileOptions {
             imports: options.imports,
+            import_resolution: Default::default(),
             condcomp: options.condcomp,
             visibility: options.visibility,
             generics: options.generics,

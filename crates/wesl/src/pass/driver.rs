@@ -13,6 +13,23 @@ pub struct CompileResult {
     pub used_items: UsedItems,
 }
 
+/// Which modules are loaded during import resolution.
+///
+/// See [`CompilerDriver::import_resolution`].
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportResolution {
+    /// Load a module only if one of its declarations is used by the entry points or
+    /// `const_assert`s, recursively. This is the behavior mandated by WESL.
+    #[default]
+    Lazy,
+    /// Also load every module referenced by any declaration or import of any loaded module,
+    /// even if that declaration or import is unused.
+    ///
+    /// Loaded modules are listed in [`CompileResult::modules`] and checked for errors.
+    /// Stripping still removes unused declarations from the output.
+    Eager,
+}
+
 /// Re-implementing this trait gives full control over the steps of the compilation pipeline.
 /// It is implemented by [`crate::Compiler`].
 ///
@@ -25,6 +42,7 @@ pub struct CompileResult {
 ///    Usage analysis returns the set of imported identifiers (defined in other modules).
 /// 4. Load missing imported modules found via usage analysis.
 /// 5. Run the previous two steps with imported modules/identifiers, until all identifiers have been usage-analyzed.
+///    With [`ImportResolution::Eager`], also repeat them for every declaration and import of every loaded module.
 /// 6. Assemble loaded modules into a final module.
 ///
 /// WESL features are implemented at different steps of this pipeline:
@@ -43,6 +61,11 @@ pub trait CompilerDriver: Sized {
     /// and both X are semver-compatible, then there should be a unique path to X.
     fn canonical_path(&self, path: &ModulePath) -> ModulePath {
         path.clone()
+    }
+
+    /// Choose whether import resolution is [lazy or eager](ImportResolution).
+    fn import_resolution(&self) -> ImportResolution {
+        ImportResolution::Lazy
     }
 
     /// List identifiers of declarations serving as starting point for static usage analysis.

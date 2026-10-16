@@ -17,7 +17,7 @@ use crate::{
     SyntaxUtil,
     error::{Diagnostic, Error, ResolveError, UsageError},
     mangler::{self, Mangler},
-    pass::{self, CompilerDriver, Features, Module, UsedItems},
+    pass::{self, CompilerDriver, Features, ImportResolution, Module, UsedItems},
     resolver::{Constants, Resolver, StandardResolver},
     sourcemap::{BasicSourceMap, SourceMapper},
 };
@@ -32,6 +32,12 @@ pub struct CompileOptions {
     /// * The compiler will silently remove all import statements and inline paths.
     /// * Validation will not trigger an error if referencing an imported item.
     pub imports: bool,
+    /// Choose which modules get loaded during import resolution.
+    ///
+    /// The default, [`ImportResolution::Lazy`], loads only modules whose items are used.
+    /// [`ImportResolution::Eager`] also loads modules referenced by unused declarations or imports,
+    /// which makes them available in [`CompileResult::modules`].
+    pub import_resolution: ImportResolution,
     /// Toggle [WESL Conditional Translation](https://github.com/webgpu-tools/wesl-spec/blob/main/ConditionalTranslation.md).
     ///
     /// See [`Self::features`] to enable/disable each feature flag.
@@ -129,6 +135,7 @@ impl Default for CompileOptions {
     fn default() -> Self {
         Self {
             imports: true,
+            import_resolution: Default::default(),
             condcomp: true,
             visibility: true,
             generics: false,
@@ -478,7 +485,7 @@ impl CompileResult {
             return;
         };
 
-        for (module_path, _) in self.used_items.iter() {
+        for module_path in self.modules.iter().map(|module| &module.path) {
             if module_path.origin.is_package() {
                 continue;
             }
@@ -561,6 +568,10 @@ impl CompilerDriver for CompilationPass<'_> {
 
     fn canonical_path(&self, path: &ModulePath) -> ModulePath {
         self.resolver.canonical_path(path)
+    }
+
+    fn import_resolution(&self) -> ImportResolution {
+        self.options.import_resolution
     }
 
     fn main_entry_points(&self, main_module: &TranslationUnit) -> Result<HashSet<Ident>, Error> {

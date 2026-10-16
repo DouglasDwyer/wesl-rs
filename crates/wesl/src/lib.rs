@@ -22,7 +22,7 @@ pub use crate::{
     frontend::*,
     mangler::Mangler,
     package::PackageBuilder,
-    pass::{Feature, Features},
+    pass::{Feature, Features, ImportResolution},
     resolver::{AsyncResolver, Constants, Resolver},
 };
 

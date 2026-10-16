@@ -204,6 +204,11 @@ fn run_compile(args: CompileOptions) -> Result<CompileResult, wesl::Error> {
 
     let comp = Compiler::new(wesl::CompileOptions {
         imports: args.imports,
+        import_resolution: if args.lazy {
+            wesl::ImportResolution::Lazy
+        } else {
+            wesl::ImportResolution::Eager
+        },
         condcomp: args.condcomp,
         visibility: args.visibility,
         generics: args.generics,

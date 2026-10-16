@@ -10,7 +10,7 @@ use std::{
     str::FromStr,
 };
 use wesl::{
-    CompileOptions, CompileResult, Compiler, Feature, Features, ManglerKind,
+    CompileOptions, CompileResult, Compiler, Feature, Features, ImportResolution, ManglerKind,
     error::Diagnostic,
     eval::{Eval, EvalAttrs, Inputs, Instance, LiteralInstance, RefInstance, Ty, ty_eval_ty},
     package::PackageBuilder,
@@ -151,6 +151,10 @@ struct CompOptsArgs {
     /// Disable imports
     #[arg(long)]
     no_imports: bool,
+    /// Eager imports: load all modules referenced by a declaration or import,
+    /// regardless of whether it is used by an entry point
+    #[arg(long)]
+    eager: bool,
     /// Disable conditional compilation
     #[arg(long)]
     no_cond_comp: bool,
@@ -222,6 +226,11 @@ impl TryFrom<&CompOptsArgs> for CompileOptions {
 
         Ok(Self {
             imports: !opts.no_imports,
+            import_resolution: if opts.eager {
+                ImportResolution::Eager
+            } else {
+                ImportResolution::Lazy
+            },
             condcomp: !opts.no_cond_comp,
             visibility: !opts.no_visibility,
             generics: opts.generics,

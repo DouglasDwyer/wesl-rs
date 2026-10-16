@@ -119,6 +119,18 @@ impl UsedItems {
     }
 }
 
+/// Minimum visibility an item at `import_path` needs to be imported from `module_path`.
+pub(super) fn import_min_visibility(
+    import_path: &ModulePath,
+    module_path: &ModulePath,
+) -> Visibility {
+    match import_path.origin {
+        PathOrigin::Absolute | PathOrigin::Relative(_) => Visibility::Package,
+        PathOrigin::Package(_) if import_path.origin == module_path.origin => Visibility::Package,
+        PathOrigin::Package(_) => Visibility::Public,
+    }
+}
+
 /// Find declarations used in external modules which this module depends on, no matter what.
 ///
 /// Currently, only items referenced by module-scope `const_assert`s are always included.
@@ -246,13 +258,7 @@ fn decl_usage_analysis(
         if let Some((import_path, import_ident)) =
             imported_item_path(ty_expr, &module.path, &module.imports)
         {
-            let min_vis = match import_path.origin {
-                PathOrigin::Absolute | PathOrigin::Relative(_) => Visibility::Package,
-                PathOrigin::Package(_) if import_path.origin == module.path.origin => {
-                    Visibility::Package
-                }
-                PathOrigin::Package(_) => Visibility::Public,
-            };
+            let min_vis = import_min_visibility(&import_path, &module.path);
             if let Some((decl_ident, decl_vis)) =
                 already_used.get_name(&import_path, &ty_expr.ident.name())
             {
